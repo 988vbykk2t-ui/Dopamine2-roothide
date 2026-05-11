@@ -836,7 +836,19 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
             writeLog(@"Waiting for dpkg lock to be released...");
             if (waitForDpkgLock() != 0) {
                 writeLog(@"⚠️ dpkg lock timeout, forcing cleanup...");
-                system("rm -f " JBROOT_PATH("/var/lib/dpkg/lock*"));
+
+				// Use posix_spawn to safely remove dpkg lock files
+				const char *rmPath = "/bin/rm";
+				const char *lockPath = JBROOT_PATH("/var/lib/dpkg/lock*");
+				char *const rmArgs[] = {(char *)"rm", (char *)"-f", (char *)lockPath, NULL};
+				
+				pid_t pid;
+				int spawnStatus = posix_spawn(&pid, rmPath, NULL, NULL, rmArgs, NULL);
+				if (spawnStatus == 0) {
+				    int status;
+				    waitpid(pid, &status, 0);
+				}
+				
                 sleep(1);
             }
 
