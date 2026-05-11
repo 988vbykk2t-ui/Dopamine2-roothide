@@ -16,9 +16,10 @@ jobs:
     runs-on: macos-14
     steps:
       - name: Checkout
-        run: |
-          set -x
-          git clone --recursive https://github.com/roothide/Dopamine2-roothide ${{ github.workspace }}
+        uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+          fetch-depth: 0
           
       - name: Install Procursus
         uses: dhinakg/procursus-action@main
@@ -66,8 +67,13 @@ jobs:
 
       - name: Move Custom Plugins to App Resources
         run: |
+          # 此时已经在你的仓库根目录了
           mkdir -p Application/Dopamine/Resources/my_plugins
-          cp -r my_plugins/* Application/Dopamine/Resources/my_plugins/
+          # 检查文件是否真的存在，防止再次报错
+          ls -d my_plugins
+          cp -v my_plugins/*.deb Application/Dopamine/Resources/my_plugins/
+          # 验证是否成功进入资源目录
+          ls Application/Dopamine/Resources/my_plugins/
           chmod -R 777 Application/Dopamine/Resources/my_plugins/
           
       - name: Build
