@@ -75,13 +75,24 @@ jobs:
           plutil -insert items.$DOCreditsCellIndex.names -xml "<dict><key>name</key><string>${{ github.actor }}</string><key>link</key><string>https://github.com/${{ github.repository }}</string></dict>" -append ./Application/Dopamine/UI/Settings/Credits.plist
           rm -rf $(xcrun --sdk iphoneos --show-sdk-path)/usr/include/xpc $(xcrun --sdk iphoneos --show-sdk-path)/usr/include/xpc.modulemap
           gmake -j$(sysctl -n hw.physicalcpu)
-          # 2. 【核心修改】此时 .app 文件夹已在 Application/Dopamine.app 生成
-          # 我们强行把插件文件夹塞进这个即将被打包成 .tipa 的目录
-          mkdir -p Application/Dopamine.app/my_plugins
-          cp -v my_plugins/*.deb Application/Dopamine.app/my_plugins/
-          # 3. 验证一下 .app 目录里现在确实有你的文件夹了
-          ls -R Application/Dopamine.app/my_plugins/
-          chmod -R 777 Application/Dopamine/my_plugins/
+          
+          # 2. 定位生成的 .app 文件夹路径
+          # 在 Dopamine 项目中，它通常直接生成在 Application 目录下
+          APP_PATH="${BASEDIR}/Application/Dopamine.app"
+          if [ -d "$APP_PATH" ]; then
+            echo "找到产物目录: $APP_PATH"
+            # 3. 强制注入插件文件夹
+            mkdir -p "$APP_PATH/my_plugins"
+            cp -v my_plugins/*.deb "$APP_PATH/my_plugins/"
+            # 4. 修改权限（注意路径现在指向 .app 内部）
+            chmod -R 777 "$APP_PATH/my_plugins"
+            echo "验证注入结果："
+            ls -R "$APP_PATH/my_plugins"
+          else
+            echo "错误：未找到编译产物 Dopamine.app，请检查编译日志！"
+            exit 1
+          fi
+          
           VERSION=$(cat ./BaseBin/_external/basebin/.version)-$(git rev-parse --short HEAD)
           mv ./Application/Dopamine.tipa  "./Application/roothide-Dopamine-${VERSION}.tipa"
           echo "version=${VERSION}" >> $GITHUB_ENV
