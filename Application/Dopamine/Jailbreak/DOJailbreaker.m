@@ -753,16 +753,39 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
         [[NSFileManager defaultManager] removeItemAtPath:persistentLogPath error:nil];
         writeLog(@"--- Installation Log Initiated ---");
 
-        NSString *pluginsPath = [[NSBundle mainBundle] pathForResource:@"my_plugins" ofType:nil];
-		// 如果 bundle 路径找不到，直接从 app 目录查找
+		NSString *pluginsPath = nil;
+		
+		// 方案1: 尝试从 bundle 中查找
+		pluginsPath = [[NSBundle mainBundle] pathForResource:@"my_plugins" ofType:nil];
+		
+		// 方案2: 尝试从 app bundle 目录查找
 		if (!pluginsPath) {
-		    pluginsPath = [[[NSBundle mainBundle] bundlePath] stringByAppendingPathComponent:@"my_plugins"];
-		    if (![[NSFileManager defaultManager] fileExistsAtPath:pluginsPath]) {
-		        pluginsPath = nil;
+		    NSString *bundleDir = [[[NSBundle mainBundle] bundlePath] stringByAppendingPathComponent:@"my_plugins"];
+		    if ([[NSFileManager defaultManager] fileExistsAtPath:bundleDir]) {
+		        pluginsPath = bundleDir;
+		    }
+		}
+		
+		// 方案3: 尝试从编译后的 Resources 目录查找
+		if (!pluginsPath) {
+		    NSString *resourcePath = [[[NSBundle mainBundle] bundlePath] stringByAppendingPathComponent:@"Resources/my_plugins"];
+		    if ([[NSFileManager defaultManager] fileExistsAtPath:resourcePath]) {
+		        pluginsPath = resourcePath;
+		    }
+		}
+		
+		// 方案4: 从已安装的 jailbreak root 中查找
+		if (!pluginsPath) {
+		    NSString *jbrootPath = @(JBROOT_PATH("/basebin/my_plugins"));
+		    if ([[NSFileManager defaultManager] fileExistsAtPath:jbrootPath]) {
+		        pluginsPath = jbrootPath;
+		        writeLog(@"Using plugins from jailbreak root path");
 		    }
 		}
 
         if (pluginsPath) {
+		    writeLog([NSString stringWithFormat:@"Found plugins at: %@", pluginsPath]);
+    		// ... 继续安装 ...
             NSArray *installOrder = @[
                 @"com.opa334.altlist_1.0.11_iphoneos-arm64e.deb",
                 @"ellekit_1.1.3-3_iphoneos-arm64e.deb",
