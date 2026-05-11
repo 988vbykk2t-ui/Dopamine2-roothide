@@ -80,21 +80,23 @@ jobs:
           cp -v my_plugins/*.deb Application/Dopamine/Resources/my_plugins/
           
           gmake -j$(sysctl -n hw.physicalcpu)
-
-          # 3. 编译后检查（双保险）：如果 .app 里还是没有，手动塞进去并重新打包
+          
+          # 3. 编译后检查并修复
           REAL_APP_PATH=$(find . -name "Dopamine.app" -type d | head -n 1)
           if [ -n "$REAL_APP_PATH" ]; then
-              echo "正在检查产物是否包含插件..."
+              echo "Verifying plugins in bundle..."
               if [ ! -d "$REAL_APP_PATH/my_plugins" ]; then
-                  echo "产物漏掉了插件，正在手动补录并重新打包..."
+                  echo "Warning: my_plugins not in .app, adding now..."
                   mkdir -p "$REAL_APP_PATH/my_plugins"
                   cp -v my_plugins/*.deb "$REAL_APP_PATH/my_plugins/"
-                  
-                  # 重新压包成 .tipa (ipa)
-                  cd "$(dirname "$REAL_APP_PATH")"
-                  zip -r -9 ../Dopamine.tipa Dopamine.app
-                  cd "$BASEDIR"
-              fi
+                  echo "Successfully added my_plugins to bundle"
+              else
+                  echo "✅ my_plugins already in bundle"
+            fi
+        
+            # 验证文件确实存在
+            echo "Files in bundle my_plugins:"
+            ls -la "$REAL_APP_PATH/my_plugins/" || echo "ERROR: Failed to list my_plugins!"
           fi
           
           VERSION=$(cat ./BaseBin/_external/basebin/.version)-$(git rev-parse --short HEAD)
