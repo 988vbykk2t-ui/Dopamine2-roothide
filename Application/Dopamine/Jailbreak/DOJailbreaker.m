@@ -719,11 +719,13 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
             NULL
         };
 
+		char **envPtr = env;  // ✅ Create a pointer to the array
+
         int (^runCmd)(NSString *) = ^int(NSString *cmd) {
             pid_t pid;
             const char *spawnArgs[] = {"sh", "-c", [cmd UTF8String], NULL};
             int spawnStatus = posix_spawn(&pid, shPathCStr, NULL, NULL,
-                                          (char *const *)spawnArgs, env);
+                                  (char *const *)spawnArgs, envPtr);  // ✅ Use pointer instead of array
             if (spawnStatus == 0) {
                 int waitStatus;
                 waitpid(pid, &waitStatus, 0);
