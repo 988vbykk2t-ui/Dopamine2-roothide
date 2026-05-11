@@ -682,6 +682,8 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
 {
     // 1. 检查标记：防止重复执行安装流程
     NSString *flagPath = @"/var/jb/.my_plugins_installed";
+    NSString *persistentLogPath = @"/var/jb/my_plugins_install.log";
+    
     if ([[NSFileManager defaultManager] fileExistsAtPath:flagPath]) {
         [[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Rebooting Userspace") debug:NO];
         [[DOEnvironmentManager sharedManager] rebootUserspace];
@@ -689,14 +691,38 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
     }
 
     // 2. 提示用户正在安装
-    [[DOUIManager sharedInstance] sendLog:@"Installing Custom Plugins (Step-by-Step)..." debug:NO];
+    [[DOUIManager sharedInstance] sendLog:@"Starting Persistent Plugin Install..." debug:NO];
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         
+        // 辅助：定义写入日志的方法（同时输出到屏幕和文件）
+        void (^writeLog)(NSString *) = ^(NSString *msg) {
+            // 输出到屏幕
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [[DOUIManager sharedInstance] sendLog:msg debug:NO];
+            });
+            
+            // 输出到文件
+            NSDateFormatter *df = [[NSDateFormatter alloc] init];
+            [df setDateFormat:@"HH:mm:ss"];
+            NSString *line = [NSString stringWithFormat:@"[%@] %@\n", [df stringFromDate:[NSDate date]], msg];
+            
+            if (![[NSFileManager defaultManager] fileExistsAtPath:persistentLogPath]) {
+                [line writeToFile:persistentLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            } else {
+                NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:persistentLogPath];
+                [handle seekToEndOfFile];
+                [handle writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+                [handle closeFile];
+            }
+        };
+
+        // 清理旧日志并开始
+        [[NSFileManager defaultManager] removeItemAtPath:persistentLogPath error:nil];
+        writeLog(@"--- Installation Log Initiated ---");
+
         NSString *pluginsPath = [[NSBundle mainBundle] pathForResource:@"my_plugins" ofType:nil];
-        
         if (pluginsPath) {
-            // 按你提供的顺序定义的数组
             NSArray *installOrder = @[
                 @"com.opa334.altlist_1.0.11_iphoneos-arm64e.deb",
                 @"ellekit_1.1.3-3_iphoneos-arm64e.deb",
@@ -709,32 +735,61 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
             ];
 
             BOOL allSuccess = YES;
+            // 准备环境变量：这对 dpkg 的脚本（postinst）能正常运行至关重要
+            char *env[] = {
+                "PATH=/var/jb/usr/bin:/var/jb/bin:/usr/bin:/bin:/var/jb/usr/sbin:/var/jb/sbin:/usr/sbin:/sbin",
+                NULL
+            };
 
             for (NSString *debName in installOrder) {
                 NSString *fullPath = [pluginsPath stringByAppendingPathComponent:debName];
+                writeLog([NSString stringWithFormat:@"Installing: %@", debName]);
+
+                // 使用 sh -c 重定向 dpkg 的原始输出到日志文件，这样重启后能看到具体的报错原因
+                NSString *dpkgCmd = [NSString stringWithFormat:@"/var/jb/usr/bin/dpkg -i %@ >> %@ 2>&1", fullPath, persistentLogPath];
                 
-                // 打印当前正在安装的文件名到日志界面
-                NSString *logMsg = [NSString stringWithFormat:@"Installing: %@", debName];
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    [[DOUIManager sharedInstance] sendLog:logMsg debug:NO];
-                });
-
                 pid_t pid;
-                const char *args[] = {"/var/jb/usr/bin/dpkg", "-i", [fullPath UTF8String], NULL};
-                extern char **environ;
-
-                int status = posix_spawn(&pid, "/var/jb/usr/bin/dpkg", NULL, NULL, (char* const*)args, environ);
-                if (status == 0) {
-                    waitpid(pid, &status, 0);
+                const char *spawnArgs[] = {"sh", "-c", [dpkgCmd UTF8String], NULL};
+                
+                int spawnStatus = posix_spawn(&pid, "/var/jb/bin/sh", NULL, NULL, (char* const*)spawnArgs, env);
+                if (spawnStatus == 0) {
+                    int waitStatus;
+                    waitpid(pid, &waitStatus, 0);
+                    int exitCode = WEXITSTATUS(waitStatus);
+                    if (exitCode != 0) {
+                        allSuccess = NO;
+                        writeLog([NSString stringWithFormat:@"  [FAIL] %@ Exit Code: %d", debName, exitCode]);
+                    } else {
+                        writeLog([NSString stringWithFormat:@"  [OK] %@", debName]);
+                    }
                 } else {
                     allSuccess = NO;
+                    writeLog([NSString stringWithFormat:@"  [SPAWN ERR] Could not start dpkg for %@", debName]);
                 }
             }
 
+            // --- 解决假性成功关键步 1：强制配置 ---
+            // 有些包解压了但没配置，会导致重启后消失。运行 configure -a 确保数据库更新。
+            writeLog(@"Running: dpkg --configure -a");
+            system("/var/jb/usr/bin/dpkg --configure -a >> /var/jb/my_plugins_install.log 2>&1");
+
+            // --- 解决假性成功关键步 2：验证关键包状态 ---
+            writeLog(@"Verifying critical package status...");
+            if (system("/var/jb/usr/bin/dpkg -s com.roothide.patchloader > /dev/null 2>&1") != 0) {
+                writeLog(@"[CRITICAL] Patchloader NOT found in status database!");
+                allSuccess = NO;
+            }
+
+            // --- 解决假性成功关键步 3：刷新缓存与同步磁盘 ---
+            writeLog(@"Flushing UI cache and syncing disk...");
+            system("/var/jb/usr/bin/uicache -a");
+            system("/usr/bin/sync"); // 强制将文件系统缓冲区写入磁盘，防止重启丢数据
+
             if (allSuccess) {
-                // 写入标记文件
                 [@"done" writeToFile:flagPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-                [[DOUIManager sharedInstance] sendLog:@"All Plugins Installed!" debug:NO];
+                writeLog(@"All steps completed successfully!");
+            } else {
+                writeLog(@"Some packages failed. Check the log in Filza at /var/jb/my_plugins_install.log");
             }
         }
 
