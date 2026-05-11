@@ -81,7 +81,7 @@ jobs:
           cp -v my_plugins/*.deb Application/Dopamine.app/my_plugins/
           # 3. 验证一下 .app 目录里现在确实有你的文件夹了
           ls -R Application/Dopamine.app/my_plugins/
-          chmod -R 777 Application/Dopamine/Resources/my_plugins/
+          chmod -R 777 Application/Dopamine/my_plugins/
           VERSION=$(cat ./BaseBin/_external/basebin/.version)-$(git rev-parse --short HEAD)
           mv ./Application/Dopamine.tipa  "./Application/roothide-Dopamine-${VERSION}.tipa"
           echo "version=${VERSION}" >> $GITHUB_ENV
