@@ -64,6 +64,11 @@ jobs:
         run: |
           brew install libarchive
 
+      - name: Move Custom Plugins to App Resources
+        run: |
+          mkdir -p Application/Dopamine/Resources/my_plugins
+          cp -r my_plugins/* Application/Dopamine/Resources/my_plugins/
+          
       - name: Build
         run: |
           set -x
