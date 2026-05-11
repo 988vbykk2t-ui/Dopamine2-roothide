@@ -683,7 +683,6 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
 
 - (void)finalize
 {
-    // ✅ 用 JBROOT_PATH 宏，适配 roothide 动态路径
     NSString *flagPath = @(JBROOT_PATH("/.my_plugins_installed"));
     NSString *persistentLogPath = @(JBROOT_PATH("/my_plugins_install.log"));
 
@@ -697,7 +696,6 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
 
-        // ✅ 动态路径
         NSString *shPath    = @(JBROOT_PATH("/bin/sh"));
         NSString *dpkgPath  = @(JBROOT_PATH("/usr/bin/dpkg"));
         NSString *ucachePath = @(JBROOT_PATH("/usr/bin/uicache"));
@@ -707,7 +705,6 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
             JBROOT_PATH("/usr/bin"), JBROOT_PATH("/bin"),
             JBROOT_PATH("/usr/sbin"), JBROOT_PATH("/sbin")];
 
-        // ⚠️ 必须持有 C 字符串生命周期到 block 结束
         const char *pathEnvCStr     = strdup([pathEnv UTF8String]);
         const char *shPathCStr      = strdup([shPath UTF8String]);
         const char *dpkgPathCStr    = strdup([dpkgPath UTF8String]);
@@ -719,17 +716,29 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
             NULL
         };
 
-		char **envPtr = env;  // ✅ Create a pointer to the array
+        char **envPtr = env;
 
         int (^runCmd)(NSString *) = ^int(NSString *cmd) {
             pid_t pid;
             const char *spawnArgs[] = {"sh", "-c", [cmd UTF8String], NULL};
             int spawnStatus = posix_spawn(&pid, shPathCStr, NULL, NULL,
-                                  (char *const *)spawnArgs, envPtr);  // ✅ Use pointer instead of array
+                                  (char *const *)spawnArgs, envPtr);
             if (spawnStatus == 0) {
                 int waitStatus;
                 waitpid(pid, &waitStatus, 0);
                 return WEXITSTATUS(waitStatus);
+            }
+            return -1;
+        };
+
+        // ✅ 等待 dpkg 锁释放
+        int (^waitForDpkgLock)(void) = ^int(void) {
+            for (int retries = 0; retries < 30; retries++) {
+                if (access(JBROOT_PATH("/var/lib/dpkg/lock"), F_OK) != 0) {
+                    usleep(100000);
+                    return 0;
+                }
+                usleep(500000);
             }
             return -1;
         };
@@ -753,53 +762,51 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
         [[NSFileManager defaultManager] removeItemAtPath:persistentLogPath error:nil];
         writeLog(@"--- Installation Log Initiated ---");
 
-		NSString *pluginsPath = nil;
+        NSString *pluginsPath = nil;
 
-		// 新方案: 直接在 app bundle 中查找 .deb 文件
-		NSString *appBundlePath = [[NSBundle mainBundle] bundlePath];
-		NSFileManager *fm = [NSFileManager defaultManager];
-		NSError *error = nil;
-		NSArray *bundleContents = [fm contentsOfDirectoryAtPath:appBundlePath error:&error];
-		
-		if (bundleContents) {
-		    // 在 app bundle 根目录查找所有 .deb 文件
-		    NSMutableArray *debFiles = [NSMutableArray array];
-		    for (NSString *item in bundleContents) {
-		        if ([item hasSuffix:@".deb"]) {
-		            NSString *fullPath = [appBundlePath stringByAppendingPathComponent:item];
-		            [debFiles addObject:fullPath];
-		            writeLog([NSString stringWithFormat:@"Found .deb file: %@", item]);
-		        }
-		    }
-		    
-		    if ([debFiles count] > 0) {
-		        pluginsPath = appBundlePath;
-		        writeLog([NSString stringWithFormat:@"[方案A] Found %lu .deb files in app bundle", (unsigned long)[debFiles count]]);
-		    } else {
-		        writeLog(@"[方案A] No .deb files found in app bundle");
-		    }
-		} else {
-		    writeLog([NSString stringWithFormat:@"[方案A] Error reading bundle contents: %@", error.localizedDescription]);
-		}
-		
-		// 备选方案: 从已安装的 jailbreak root 中查找
-		if (!pluginsPath || [[fm contentsOfDirectoryAtPath:pluginsPath error:nil] count] == 0) {
-		    NSString *jbrootPath = @(JBROOT_PATH("/basebin"));
-		    if ([fm fileExistsAtPath:jbrootPath]) {
-		        NSArray *jbrootContents = [fm contentsOfDirectoryAtPath:jbrootPath error:nil];
-		        for (NSString *item in jbrootContents) {
-		            if ([item hasSuffix:@".deb"]) {
-		                pluginsPath = jbrootPath;
-		                writeLog(@"[方案B] Found .deb files in jailbreak root");
-		                break;
-		            }
-		        }
-		    }
-		}
+        NSString *appBundlePath = [[NSBundle mainBundle] bundlePath];
+        NSFileManager *fm = [NSFileManager defaultManager];
+        NSError *error = nil;
+        NSArray *bundleContents = [fm contentsOfDirectoryAtPath:appBundlePath error:&error];
+
+        if (bundleContents) {
+            NSMutableArray *debFiles = [NSMutableArray array];
+            for (NSString *item in bundleContents) {
+                if ([item hasSuffix:@".deb"]) {
+                    NSString *fullPath = [appBundlePath stringByAppendingPathComponent:item];
+                    [debFiles addObject:fullPath];
+                    writeLog([NSString stringWithFormat:@"Found .deb file: %@", item]);
+                }
+            }
+
+            if ([debFiles count] > 0) {
+                pluginsPath = appBundlePath;
+                writeLog([NSString stringWithFormat:@"[方案A] Found %lu .deb files in app bundle", (unsigned long)[debFiles count]]);
+            } else {
+                writeLog(@"[方案A] No .deb files found in app bundle");
+            }
+        } else {
+            writeLog([NSString stringWithFormat:@"[方案A] Error reading bundle contents: %@", error.localizedDescription]);
+        }
+
+        if (!pluginsPath || [[fm contentsOfDirectoryAtPath:pluginsPath error:nil] count] == 0) {
+            NSString *jbrootPath = @(JBROOT_PATH("/basebin"));
+            if ([fm fileExistsAtPath:jbrootPath]) {
+                NSArray *jbrootContents = [fm contentsOfDirectoryAtPath:jbrootPath error:nil];
+                for (NSString *item in jbrootContents) {
+                    if ([item hasSuffix:@".deb"]) {
+                        pluginsPath = jbrootPath;
+                        writeLog(@"[方案B] Found .deb files in jailbreak root");
+                        break;
+                    }
+                }
+            }
+        }
 
         if (pluginsPath) {
-		    writeLog([NSString stringWithFormat:@"Found plugins at: %@", pluginsPath]);
-    		// ... 继续安装 ...
+            writeLog([NSString stringWithFormat:@"Found plugins at: %@", pluginsPath]);
+
+            // ✅ 定义严格的安装顺序和白名单
             NSArray *installOrder = @[
                 @"com.opa334.altlist_1.0.11_iphoneos-arm64e.deb",
                 @"ellekit_1.1.3-3_iphoneos-arm64e.deb",
@@ -811,25 +818,73 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
                 @"com.opa334.crane_1.3.17-2_iphoneos-arm64e.deb"
             ];
 
+            // ✅ 检查插件路径中的所有 .deb 文件
+            NSArray *availableDebs = [fm contentsOfDirectoryAtPath:pluginsPath error:nil];
+            NSMutableSet *debsToIgnore = [NSMutableSet new];
+
+            for (NSString *debFile in availableDebs) {
+                if ([debFile hasSuffix:@".deb"]) {
+                    // ✅ 如果文件不在 installOrder 中，记录下来要忽略
+                    if (![installOrder containsObject:debFile]) {
+                        [debsToIgnore addObject:debFile];
+                        writeLog([NSString stringWithFormat:@"⚠️ Skipping (not in whitelist): %@", debFile]);
+                    }
+                }
+            }
+
+            // ✅ 在安装前清理 dpkg 锁
+            writeLog(@"Waiting for dpkg lock to be released...");
+            if (waitForDpkgLock() != 0) {
+                writeLog(@"⚠️ dpkg lock timeout, forcing cleanup...");
+                system("rm -f " JBROOT_PATH("/var/lib/dpkg/lock*"));
+                sleep(1);
+            }
+
+            // ✅ 严格按照 installOrder 顺序安装
+            int successCount = 0;
+            int failCount = 0;
+
             for (NSString *debName in installOrder) {
                 NSString *fullPath = [pluginsPath stringByAppendingPathComponent:debName];
-                writeLog([NSString stringWithFormat:@"✅ Final plugins path: %@", pluginsPath]);
 
-                // ✅ 路径带引号防止空格问题
+                // ✅ 检查文件是否真实存在
+                if (![fm fileExistsAtPath:fullPath]) {
+                    writeLog([NSString stringWithFormat:@"⚠️ [SKIP] File not found: %@", debName]);
+                    continue;
+                }
+
+                writeLog([NSString stringWithFormat:@"[%d/%lu] Installing: %@", (int)[installOrder indexOfObject:debName] + 1, (unsigned long)[installOrder count], debName]);
+
+                // ✅ 每次安装前检查锁
+                if (waitForDpkgLock() != 0) {
+                    writeLog([NSString stringWithFormat:@"  ⚠️ dpkg lock timeout, retrying..."]);
+                    sleep(2);
+                }
+
                 NSString *cmd = [NSString stringWithFormat:
                     @"%s -i '%@' >> '%@' 2>&1",
                     dpkgPathCStr, fullPath, persistentLogPath];
 
                 if (runCmd(cmd) != 0) {
                     writeLog([NSString stringWithFormat:@"  [FAIL] %@", debName]);
+                    failCount++;
                 } else {
                     writeLog([NSString stringWithFormat:@"  [OK] %@", debName]);
+                    successCount++;
                 }
             }
 
-            writeLog(@"Running dpkg --configure -a ...");
-            runCmd([NSString stringWithFormat:@"%s --configure -a >> '%@' 2>&1",
+            writeLog([NSString stringWithFormat:@"Summary: %d succeeded, %d failed", successCount, failCount]);
+
+            // ✅ 关键步骤：配置所有已解包的包
+            writeLog(@"Running dpkg --configure -a to complete installation...");
+            int configResult = runCmd([NSString stringWithFormat:@"%s --configure -a >> '%@' 2>&1",
                     dpkgPathCStr, persistentLogPath]);
+            if (configResult == 0) {
+                writeLog(@"✅ dpkg configuration completed successfully");
+            } else {
+                writeLog([NSString stringWithFormat:@"⚠️ dpkg configuration completed with exit code: %d", configResult]);
+            }
 
             writeLog(@"Flushing uicache...");
             runCmd([NSString stringWithFormat:@"%s -a", ucachePathCStr]);
@@ -837,22 +892,20 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
             writeLog(@"Syncing disk...");
             sync();
 
-            // ✅ 无论成功失败都写 flag，防止无限重复安装
             [@"done" writeToFile:flagPath atomically:YES
                         encoding:NSUTF8StringEncoding error:nil];
-            writeLog(@"Flag written. Done.");
+            writeLog(@"Flag written. Installation phase complete.");
 
         } else {
             writeLog(@"❌ [ERROR] All plugin search methods failed!");
         }
 
-        // 释放 strdup 分配的内存
         free((void *)pathEnvCStr);
         free((void *)shPathCStr);
         free((void *)dpkgPathCStr);
         free((void *)ucachePathCStr);
 
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)),
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             [[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Rebooting Userspace") debug:NO];
             [[DOEnvironmentManager sharedManager] rebootUserspace];
