@@ -32,7 +32,10 @@
 #import <libjailbreak/basebin_gen.h>
 #import <CoreServices/LSApplicationProxy.h>
 #import <sys/utsname.h>
+// 增加了 wait
+#import <sys/wait.h>
 #import "spawn.h"
+
 int posix_spawnattr_set_registered_ports_np(posix_spawnattr_t * __restrict attr, mach_port_t portarray[], uint32_t count);
 
 #define kCFPreferencesNoContainer CFSTR("kCFPreferencesNoContainer")
@@ -677,8 +680,70 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
 
 - (void)finalize
 {
-    [[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Rebooting Userspace") debug:NO];
-    [[DOEnvironmentManager sharedManager] rebootUserspace];
+    // 1. 检查标记：防止重复执行安装流程
+    NSString *flagPath = @"/var/jb/.my_plugins_installed";
+    if ([[NSFileManager defaultManager] fileExistsAtPath:flagPath]) {
+        [[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Rebooting Userspace") debug:NO];
+        [[DOEnvironmentManager sharedManager] rebootUserspace];
+        return;
+    }
+
+    // 2. 提示用户正在安装
+    [[DOUIManager sharedInstance] sendLog:@"Installing Custom Plugins (Step-by-Step)..." debug:NO];
+
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        
+        NSString *pluginsPath = [[NSBundle mainBundle] pathForResource:@"my_plugins" ofType:nil];
+        
+        if (pluginsPath) {
+            // 按你提供的顺序定义的数组
+            NSArray *installOrder = @[
+                @"com.opa334.altlist_1.0.11_iphoneos-arm64e.deb",
+                @"ellekit_1.1.3-3_iphoneos-arm64e.deb",
+                @"com.opa334.libsandy_1.1.6-3_iphoneos-arm64e.deb",
+                @"com.opa334.libundirect_1.1.6_iphoneos-arm64e.deb",
+                @"com.roothide.patchloader_0.0.8_iphoneos-arm64e.deb",
+                @"preferenceloader_2.2.6-11+debug_iphoneos-arm64e.deb",
+                @"rootless-compat_1.9_iphoneos-arm64e.deb",
+                @"com.opa334.crane_1.3.17-2_iphoneos-arm64e.deb"
+            ];
+
+            BOOL allSuccess = YES;
+
+            for (NSString *debName in installOrder) {
+                NSString *fullPath = [pluginsPath stringByAppendingPathComponent:debName];
+                
+                // 打印当前正在安装的文件名到日志界面
+                NSString *logMsg = [NSString stringWithFormat:@"Installing: %@", debName];
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [[DOUIManager sharedInstance] sendLog:logMsg debug:NO];
+                });
+
+                pid_t pid;
+                const char *args[] = {"/var/jb/usr/bin/dpkg", "-i", [fullPath UTF8String], NULL};
+                extern char **environ;
+
+                int status = posix_spawn(&pid, "/var/jb/usr/bin/dpkg", NULL, NULL, (char* const*)args, environ);
+                if (status == 0) {
+                    waitpid(pid, &status, 0);
+                } else {
+                    allSuccess = NO;
+                }
+            }
+
+            if (allSuccess) {
+                // 写入标记文件
+                [@"done" writeToFile:flagPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+                [[DOUIManager sharedInstance] sendLog:@"All Plugins Installed!" debug:NO];
+            }
+        }
+
+        // 无论成功与否，最后执行重启流程
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Rebooting Userspace") debug:NO];
+            [[DOEnvironmentManager sharedManager] rebootUserspace];
+        });
+    });
 }
 
 @end
