@@ -754,6 +754,13 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
         writeLog(@"--- Installation Log Initiated ---");
 
         NSString *pluginsPath = [[NSBundle mainBundle] pathForResource:@"my_plugins" ofType:nil];
+		// 如果 bundle 路径找不到，直接从 app 目录查找
+		if (!pluginsPath) {
+		    pluginsPath = [[[NSBundle mainBundle] bundlePath] stringByAppendingPathComponent:@"my_plugins"];
+		    if (![[NSFileManager defaultManager] fileExistsAtPath:pluginsPath]) {
+		        pluginsPath = nil;
+		    }
+		}
 
         if (pluginsPath) {
             NSArray *installOrder = @[
