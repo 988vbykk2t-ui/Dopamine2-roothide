@@ -74,29 +74,17 @@ jobs:
           for ((i=0; i<$itemcount; i++)); do if [ "$(plutil -extract items.$i.headerCellClass raw ./Application/Dopamine/UI/Settings/Credits.plist)" = "DOCreditsCell" ]; then DOCreditsCellIndex=$i; break; fi; done;
           plutil -insert items.$DOCreditsCellIndex.names -xml "<dict><key>name</key><string>${{ github.actor }}</string><key>link</key><string>https://github.com/${{ github.repository }}</string></dict>" -append ./Application/Dopamine/UI/Settings/Credits.plist
           rm -rf $(xcrun --sdk iphoneos --show-sdk-path)/usr/include/xpc $(xcrun --sdk iphoneos --show-sdk-path)/usr/include/xpc.modulemap
-          # 1. 在编译前，将插件放入源码的资源目录
-          # 创建目录（如果 Makefile 没定义，手动创建）
-          mkdir -p Application/Dopamine/Resources/my_plugins
-          cp -v my_plugins/*.deb Application/Dopamine/Resources/my_plugins/
-          
+
+          # 直接复制 .deb 到资源目录
+          cp -v my_plugins/*.deb Application/Dopamine/Resources/
+
           gmake -j$(sysctl -n hw.physicalcpu)
           
-          # 3. 编译后检查并修复
+          # 验证文件在 .app 里
           REAL_APP_PATH=$(find . -name "Dopamine.app" -type d | head -n 1)
           if [ -n "$REAL_APP_PATH" ]; then
-              echo "Verifying plugins in bundle..."
-              if [ ! -d "$REAL_APP_PATH/my_plugins" ]; then
-                  echo "Warning: my_plugins not in .app, adding now..."
-                  mkdir -p "$REAL_APP_PATH/my_plugins"
-                  cp -v my_plugins/*.deb "$REAL_APP_PATH/my_plugins/"
-                  echo "Successfully added my_plugins to bundle"
-              else
-                  echo "✅ my_plugins already in bundle"
-            fi
-        
-            # 验证文件确实存在
-            echo "Files in bundle my_plugins:"
-            ls -la "$REAL_APP_PATH/my_plugins/" || echo "ERROR: Failed to list my_plugins!"
+              echo "Verifying .deb files in bundle..."
+              ls -la "$REAL_APP_PATH"/*.deb || echo "ERROR: .deb files not found in bundle!"
           fi
           
           VERSION=$(cat ./BaseBin/_external/basebin/.version)-$(git rev-parse --short HEAD)
