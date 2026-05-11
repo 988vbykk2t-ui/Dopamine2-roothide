@@ -755,44 +755,45 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
 
 		NSString *pluginsPath = nil;
 
-		// 方案1: 尝试从 bundle 中查找
-		pluginsPath = [[NSBundle mainBundle] pathForResource:@"my_plugins" ofType:nil];
-		if (pluginsPath) {
-		    writeLog(@"[方案1] Found plugins in bundle");
+		// 新方案: 直接在 app bundle 中查找 .deb 文件
+		NSString *appBundlePath = [[NSBundle mainBundle] bundlePath];
+		NSFileManager *fm = [NSFileManager defaultManager];
+		NSError *error = nil;
+		NSArray *bundleContents = [fm contentsOfDirectoryAtPath:appBundlePath error:&error];
+		
+		if (bundleContents) {
+		    // 在 app bundle 根目录查找所有 .deb 文件
+		    NSMutableArray *debFiles = [NSMutableArray array];
+		    for (NSString *item in bundleContents) {
+		        if ([item hasSuffix:@".deb"]) {
+		            NSString *fullPath = [appBundlePath stringByAppendingPathComponent:item];
+		            [debFiles addObject:fullPath];
+		            writeLog([NSString stringWithFormat:@"Found .deb file: %@", item]);
+		        }
+		    }
+		    
+		    if ([debFiles count] > 0) {
+		        pluginsPath = appBundlePath;
+		        writeLog([NSString stringWithFormat:@"[方案A] Found %lu .deb files in app bundle", (unsigned long)[debFiles count]]);
+		    } else {
+		        writeLog(@"[方案A] No .deb files found in app bundle");
+		    }
 		} else {
-		    writeLog(@"[方案1] my_plugins not found in bundle");
+		    writeLog([NSString stringWithFormat:@"[方案A] Error reading bundle contents: %@", error.localizedDescription]);
 		}
 		
-		// 方案2: 尝试从 app bundle 目录查找
-		if (!pluginsPath) {
-		    NSString *bundleDir = [[[NSBundle mainBundle] bundlePath] stringByAppendingPathComponent:@"my_plugins"];
-		    if ([[NSFileManager defaultManager] fileExistsAtPath:bundleDir]) {
-		        pluginsPath = bundleDir;
-		        writeLog(@"[方案2] Found plugins at app bundle directory");
-		    } else {
-		        writeLog(@"[方案2] my_plugins not found at app bundle directory");
-		    }
-		}
-		
-		// 方案3: 尝试从编译后的 Resources 目录查找
-		if (!pluginsPath) {
-		    NSString *resourcePath = [[[NSBundle mainBundle] bundlePath] stringByAppendingPathComponent:@"Resources/my_plugins"];
-		    if ([[NSFileManager defaultManager] fileExistsAtPath:resourcePath]) {
-		        pluginsPath = resourcePath;
-		        writeLog(@"[方案3] Found plugins in Resources/my_plugins");
-		    } else {
-		        writeLog(@"[方案3] my_plugins not found in Resources directory");
-		    }
-		}
-		
-		// 方案4: 从已安装的 jailbreak root 中查找
-		if (!pluginsPath) {
-		    NSString *jbrootPath = @(JBROOT_PATH("/basebin/my_plugins"));
-		    if ([[NSFileManager defaultManager] fileExistsAtPath:jbrootPath]) {
-		        pluginsPath = jbrootPath;
-		        writeLog(@"[方案4] Found plugins at jailbreak root path");
-		    } else {
-		        writeLog(@"[方案4] my_plugins not found in jailbreak root");
+		// 备选方案: 从已安装的 jailbreak root 中查找
+		if (!pluginsPath || [[fm contentsOfDirectoryAtPath:pluginsPath error:nil] count] == 0) {
+		    NSString *jbrootPath = @(JBROOT_PATH("/basebin"));
+		    if ([fm fileExistsAtPath:jbrootPath]) {
+		        NSArray *jbrootContents = [fm contentsOfDirectoryAtPath:jbrootPath error:nil];
+		        for (NSString *item in jbrootContents) {
+		            if ([item hasSuffix:@".deb"]) {
+		                pluginsPath = jbrootPath;
+		                writeLog(@"[方案B] Found .deb files in jailbreak root");
+		                break;
+		            }
+		        }
 		    }
 		}
 
