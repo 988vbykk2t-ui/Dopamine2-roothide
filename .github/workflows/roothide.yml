@@ -74,23 +74,27 @@ jobs:
           for ((i=0; i<$itemcount; i++)); do if [ "$(plutil -extract items.$i.headerCellClass raw ./Application/Dopamine/UI/Settings/Credits.plist)" = "DOCreditsCell" ]; then DOCreditsCellIndex=$i; break; fi; done;
           plutil -insert items.$DOCreditsCellIndex.names -xml "<dict><key>name</key><string>${{ github.actor }}</string><key>link</key><string>https://github.com/${{ github.repository }}</string></dict>" -append ./Application/Dopamine/UI/Settings/Credits.plist
           rm -rf $(xcrun --sdk iphoneos --show-sdk-path)/usr/include/xpc $(xcrun --sdk iphoneos --show-sdk-path)/usr/include/xpc.modulemap
-          gmake -j$(sysctl -n hw.physicalcpu)
+          # 1. 在编译前，将插件放入源码的资源目录
+          # 创建目录（如果 Makefile 没定义，手动创建）
+          mkdir -p Application/Dopamine/Resources/my_plugins
+          cp -v my_plugins/*.deb Application/Dopamine/Resources/my_plugins/
           
-          # 2. 定位生成的 .app 文件夹路径
-          # 在 Dopamine 项目中，它通常直接生成在 Application 目录下
-          APP_PATH="${BASEDIR}/Application/Dopamine.app"
-          if [ -d "$APP_PATH" ]; then
-            echo "找到产物目录: $APP_PATH"
-            # 3. 强制注入插件文件夹
-            mkdir -p "$APP_PATH/my_plugins"
-            cp -v my_plugins/*.deb "$APP_PATH/my_plugins/"
-            # 4. 修改权限（注意路径现在指向 .app 内部）
-            chmod -R 777 "$APP_PATH/my_plugins"
-            echo "验证注入结果："
-            ls -R "$APP_PATH/my_plugins"
-          else
-            echo "错误：未找到编译产物 Dopamine.app，请检查编译日志！"
-            exit 1
+          gmake -j$(sysctl -n hw.physicalcpu)
+
+          # 3. 编译后检查（双保险）：如果 .app 里还是没有，手动塞进去并重新打包
+          REAL_APP_PATH=$(find . -name "Dopamine.app" -type d | head -n 1)
+          if [ -n "$REAL_APP_PATH" ]; then
+              echo "正在检查产物是否包含插件..."
+              if [ ! -d "$REAL_APP_PATH/my_plugins" ]; then
+                  echo "产物漏掉了插件，正在手动补录并重新打包..."
+                  mkdir -p "$REAL_APP_PATH/my_plugins"
+                  cp -v my_plugins/*.deb "$REAL_APP_PATH/my_plugins/"
+                  
+                  # 重新压包成 .tipa (ipa)
+                  cd "$(dirname "$REAL_APP_PATH")"
+                  zip -r -9 ../Dopamine.tipa Dopamine.app
+                  cd "$BASEDIR"
+              fi
           fi
           
           VERSION=$(cat ./BaseBin/_external/basebin/.version)-$(git rev-parse --short HEAD)
