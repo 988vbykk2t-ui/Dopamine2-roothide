@@ -676,52 +676,83 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
     // It's only neccessary when we don't immediately userspace reboot
     
     printf("Done!\n");
+	// ✅ 调用插件安装流程（内部会触发 rebootUserspace）
+    [self finalize];
+    return; // finalize 内部负责 reboot，这里直接返回
 }
 
 - (void)finalize
 {
-    // 1. 检查标记：防止重复执行安装流程
-    NSString *flagPath = @"/var/jb/.my_plugins_installed";
-    NSString *persistentLogPath = @"/var/jb/my_plugins_install.log";
-    
+    // ✅ 用 JBROOT_PATH 宏，适配 roothide 动态路径
+    NSString *flagPath = @(JBROOT_PATH("/.my_plugins_installed"));
+    NSString *persistentLogPath = @(JBROOT_PATH("/my_plugins_install.log"));
+
     if ([[NSFileManager defaultManager] fileExistsAtPath:flagPath]) {
         [[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Rebooting Userspace") debug:NO];
         [[DOEnvironmentManager sharedManager] rebootUserspace];
         return;
     }
 
-    // 2. 提示用户正在安装
-    [[DOUIManager sharedInstance] sendLog:@"Starting Persistent Plugin Install..." debug:NO];
+    [[DOUIManager sharedInstance] sendLog:@"Starting Plugin Install..." debug:NO];
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        
-        // 辅助：定义写入日志的方法（同时输出到屏幕和文件）
+
+        // ✅ 动态路径
+        NSString *shPath    = @(JBROOT_PATH("/bin/sh"));
+        NSString *dpkgPath  = @(JBROOT_PATH("/usr/bin/dpkg"));
+        NSString *ucachePath = @(JBROOT_PATH("/usr/bin/uicache"));
+
+        NSString *pathEnv = [NSString stringWithFormat:
+            @"PATH=%s:%s:%s:%s",
+            JBROOT_PATH("/usr/bin"), JBROOT_PATH("/bin"),
+            JBROOT_PATH("/usr/sbin"), JBROOT_PATH("/sbin")];
+
+        // ⚠️ 必须持有 C 字符串生命周期到 block 结束
+        const char *pathEnvCStr     = strdup([pathEnv UTF8String]);
+        const char *shPathCStr      = strdup([shPath UTF8String]);
+        const char *dpkgPathCStr    = strdup([dpkgPath UTF8String]);
+        const char *ucachePathCStr  = strdup([ucachePath UTF8String]);
+
+        char *env[] = {
+            (char *)pathEnvCStr,
+            "DEBIAN_FRONTEND=noninteractive",
+            NULL
+        };
+
+        int (^runCmd)(NSString *) = ^int(NSString *cmd) {
+            pid_t pid;
+            const char *spawnArgs[] = {"sh", "-c", [cmd UTF8String], NULL};
+            int spawnStatus = posix_spawn(&pid, shPathCStr, NULL, NULL,
+                                          (char *const *)spawnArgs, env);
+            if (spawnStatus == 0) {
+                int waitStatus;
+                waitpid(pid, &waitStatus, 0);
+                return WEXITSTATUS(waitStatus);
+            }
+            return -1;
+        };
+
         void (^writeLog)(NSString *) = ^(NSString *msg) {
-            // 输出到屏幕
             dispatch_async(dispatch_get_main_queue(), ^{
                 [[DOUIManager sharedInstance] sendLog:msg debug:NO];
             });
-            
-            // 输出到文件
-            NSDateFormatter *df = [[NSDateFormatter alloc] init];
-            [df setDateFormat:@"HH:mm:ss"];
-            NSString *line = [NSString stringWithFormat:@"[%@] %@\n", [df stringFromDate:[NSDate date]], msg];
-            
-            if (![[NSFileManager defaultManager] fileExistsAtPath:persistentLogPath]) {
-                [line writeToFile:persistentLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            NSString *line = [NSString stringWithFormat:@"[%@] %@\n", [NSDate date], msg];
+            NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:persistentLogPath];
+            if (!handle) {
+                [line writeToFile:persistentLogPath atomically:YES
+                         encoding:NSUTF8StringEncoding error:nil];
             } else {
-                NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:persistentLogPath];
                 [handle seekToEndOfFile];
                 [handle writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
                 [handle closeFile];
             }
         };
 
-        // 清理旧日志并开始
         [[NSFileManager defaultManager] removeItemAtPath:persistentLogPath error:nil];
         writeLog(@"--- Installation Log Initiated ---");
 
         NSString *pluginsPath = [[NSBundle mainBundle] pathForResource:@"my_plugins" ofType:nil];
+
         if (pluginsPath) {
             NSArray *installOrder = @[
                 @"com.opa334.altlist_1.0.11_iphoneos-arm64e.deb",
@@ -734,67 +765,49 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
                 @"com.opa334.crane_1.3.17-2_iphoneos-arm64e.deb"
             ];
 
-            BOOL allSuccess = YES;
-            // 准备环境变量：这对 dpkg 的脚本（postinst）能正常运行至关重要
-            char *env[] = {
-                "PATH=/var/jb/usr/bin:/var/jb/bin:/usr/bin:/bin:/var/jb/usr/sbin:/var/jb/sbin:/usr/sbin:/sbin",
-                NULL
-            };
-
             for (NSString *debName in installOrder) {
                 NSString *fullPath = [pluginsPath stringByAppendingPathComponent:debName];
                 writeLog([NSString stringWithFormat:@"Installing: %@", debName]);
 
-                // 使用 sh -c 重定向 dpkg 的原始输出到日志文件，这样重启后能看到具体的报错原因
-                NSString *dpkgCmd = [NSString stringWithFormat:@"/var/jb/usr/bin/dpkg -i %@ >> %@ 2>&1", fullPath, persistentLogPath];
-                
-                pid_t pid;
-                const char *spawnArgs[] = {"sh", "-c", [dpkgCmd UTF8String], NULL};
-                
-                int spawnStatus = posix_spawn(&pid, "/var/jb/bin/sh", NULL, NULL, (char* const*)spawnArgs, env);
-                if (spawnStatus == 0) {
-                    int waitStatus;
-                    waitpid(pid, &waitStatus, 0);
-                    int exitCode = WEXITSTATUS(waitStatus);
-                    if (exitCode != 0) {
-                        allSuccess = NO;
-                        writeLog([NSString stringWithFormat:@"  [FAIL] %@ Exit Code: %d", debName, exitCode]);
-                    } else {
-                        writeLog([NSString stringWithFormat:@"  [OK] %@", debName]);
-                    }
+                // ✅ 路径带引号防止空格问题
+                NSString *cmd = [NSString stringWithFormat:
+                    @"%s -i '%@' >> '%@' 2>&1",
+                    dpkgPathCStr, fullPath, persistentLogPath];
+
+                if (runCmd(cmd) != 0) {
+                    writeLog([NSString stringWithFormat:@"  [FAIL] %@", debName]);
                 } else {
-                    allSuccess = NO;
-                    writeLog([NSString stringWithFormat:@"  [SPAWN ERR] Could not start dpkg for %@", debName]);
+                    writeLog([NSString stringWithFormat:@"  [OK] %@", debName]);
                 }
             }
 
-            // --- 解决假性成功关键步 1：强制配置 ---
-            // 有些包解压了但没配置，会导致重启后消失。运行 configure -a 确保数据库更新。
-            writeLog(@"Running: dpkg --configure -a");
-            system("/var/jb/usr/bin/dpkg --configure -a >> /var/jb/my_plugins_install.log 2>&1");
+            writeLog(@"Running dpkg --configure -a ...");
+            runCmd([NSString stringWithFormat:@"%s --configure -a >> '%@' 2>&1",
+                    dpkgPathCStr, persistentLogPath]);
 
-            // --- 解决假性成功关键步 2：验证关键包状态 ---
-            writeLog(@"Verifying critical package status...");
-            if (system("/var/jb/usr/bin/dpkg -s com.roothide.patchloader > /dev/null 2>&1") != 0) {
-                writeLog(@"[CRITICAL] Patchloader NOT found in status database!");
-                allSuccess = NO;
-            }
+            writeLog(@"Flushing uicache...");
+            runCmd([NSString stringWithFormat:@"%s -a", ucachePathCStr]);
 
-            // --- 解决假性成功关键步 3：刷新缓存与同步磁盘 ---
-            writeLog(@"Flushing UI cache and syncing disk...");
-            system("/var/jb/usr/bin/uicache -a");
-            system("/usr/bin/sync"); // 强制将文件系统缓冲区写入磁盘，防止重启丢数据
+            writeLog(@"Syncing disk...");
+            sync();
 
-            if (allSuccess) {
-                [@"done" writeToFile:flagPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-                writeLog(@"All steps completed successfully!");
-            } else {
-                writeLog(@"Some packages failed. Check the log in Filza at /var/jb/my_plugins_install.log");
-            }
+            // ✅ 无论成功失败都写 flag，防止无限重复安装
+            [@"done" writeToFile:flagPath atomically:YES
+                        encoding:NSUTF8StringEncoding error:nil];
+            writeLog(@"Flag written. Done.");
+
+        } else {
+            writeLog(@"[ERROR] my_plugins not found in bundle!");
         }
 
-        // 无论成功与否，最后执行重启流程
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        // 释放 strdup 分配的内存
+        free((void *)pathEnvCStr);
+        free((void *)shPathCStr);
+        free((void *)dpkgPathCStr);
+        free((void *)ucachePathCStr);
+
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
             [[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Rebooting Userspace") debug:NO];
             [[DOEnvironmentManager sharedManager] rebootUserspace];
         });
