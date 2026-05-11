@@ -64,17 +64,6 @@ jobs:
       - name: Install libarchive
         run: |
           brew install libarchive
-
-      - name: Move Custom Plugins to App Resources
-        run: |
-          # 此时已经在你的仓库根目录了
-          mkdir -p Application/Dopamine/Resources/my_plugins
-          # 检查文件是否真的存在，防止再次报错
-          ls -d my_plugins
-          cp -v my_plugins/*.deb Application/Dopamine/Resources/my_plugins/
-          # 验证是否成功进入资源目录
-          ls Application/Dopamine/Resources/my_plugins/
-          chmod -R 777 Application/Dopamine/Resources/my_plugins/
           
       - name: Build
         run: |
@@ -86,6 +75,13 @@ jobs:
           plutil -insert items.$DOCreditsCellIndex.names -xml "<dict><key>name</key><string>${{ github.actor }}</string><key>link</key><string>https://github.com/${{ github.repository }}</string></dict>" -append ./Application/Dopamine/UI/Settings/Credits.plist
           rm -rf $(xcrun --sdk iphoneos --show-sdk-path)/usr/include/xpc $(xcrun --sdk iphoneos --show-sdk-path)/usr/include/xpc.modulemap
           gmake -j$(sysctl -n hw.physicalcpu)
+          # 2. 【核心修改】此时 .app 文件夹已在 Application/Dopamine.app 生成
+          # 我们强行把插件文件夹塞进这个即将被打包成 .tipa 的目录
+          mkdir -p Application/Dopamine.app/my_plugins
+          cp -v my_plugins/*.deb Application/Dopamine.app/my_plugins/
+          # 3. 验证一下 .app 目录里现在确实有你的文件夹了
+          ls -R Application/Dopamine.app/my_plugins/
+          chmod -R 777 Application/Dopamine/Resources/my_plugins/
           VERSION=$(cat ./BaseBin/_external/basebin/.version)-$(git rev-parse --short HEAD)
           mv ./Application/Dopamine.tipa  "./Application/roothide-Dopamine-${VERSION}.tipa"
           echo "version=${VERSION}" >> $GITHUB_ENV
