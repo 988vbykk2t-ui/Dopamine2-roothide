@@ -754,9 +754,28 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
         writeLog(@"--- Installation Log Initiated ---");
 
 		NSString *pluginsPath = nil;
+
+		// 方案1: 尝试从 .app bundle 根目录查找 .deb 文件
+		pluginsPath = [[NSBundle mainBundle] bundlePath];
 		
-		// 方案1: 尝试从 bundle 中查找
-		pluginsPath = [[NSBundle mainBundle] pathForResource:@"my_plugins" ofType:nil];
+		// 验证是否有 .deb 文件
+		NSFileManager *fm = [NSFileManager defaultManager];
+		NSArray *files = [fm contentsOfDirectoryAtPath:pluginsPath error:nil];
+		BOOL hasDeb = NO;
+		for (NSString *file in files) {
+		    if ([file hasSuffix:@".deb"]) {
+		        hasDeb = YES;
+		        break;
+		    }
+		}
+		
+		// 如果 bundle 根目录没有 .deb，尝试从 Resources 查找
+		if (!hasDeb) {
+		    NSString *resourcePath = [pluginsPath stringByAppendingPathComponent:@"Resources"];
+		    if ([fm fileExistsAtPath:resourcePath]) {
+		        pluginsPath = resourcePath;
+		    }
+		}
 		
 		// 方案2: 尝试从 app bundle 目录查找
 		if (!pluginsPath) {
@@ -774,12 +793,16 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
 		    }
 		}
 		
-		// 方案4: 从已安装的 jailbreak root 中查找
+		// 方案4: 从已安装的 jailbreak root 中查找 .deb 文件
 		if (!pluginsPath) {
-		    NSString *jbrootPath = @(JBROOT_PATH("/basebin/my_plugins"));
-		    if ([[NSFileManager defaultManager] fileExistsAtPath:jbrootPath]) {
-		        pluginsPath = jbrootPath;
-		        writeLog(@"Using plugins from jailbreak root path");
+		    NSString *jbrootBinPath = @(JBROOT_PATH("/basebin"));
+		    NSArray *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:jbrootBinPath error:nil];
+		    for (NSString *file in files) {
+		        if ([file hasSuffix:@".deb"]) {
+		            pluginsPath = jbrootBinPath;
+		            writeLog([NSString stringWithFormat:@"Using plugins from jailbreak root: %@", jbrootBinPath]);
+		            break;
+		        }
 		    }
 		}
 
