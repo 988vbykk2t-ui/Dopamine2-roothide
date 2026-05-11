@@ -68,6 +68,7 @@ jobs:
         run: |
           mkdir -p Application/Dopamine/Resources/my_plugins
           cp -r my_plugins/* Application/Dopamine/Resources/my_plugins/
+          chmod -R 777 Application/Dopamine/Resources/my_plugins/
           
       - name: Build
         run: |
