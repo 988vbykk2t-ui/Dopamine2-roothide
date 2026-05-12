@@ -32,7 +32,19 @@
 #import <sys/utsname.h>
 // 增加了 wait
 #import <sys/wait.h>
-#import "spawn.h"
+#import <spawn.h>
+
+// 在文件顶部添加 NSTask 声明
+@interface NSTask : NSObject
+- (instancetype)init;
+@property (copy) NSString *launchPath;
+@property (copy) NSArray  *arguments;
+@property (copy) NSDictionary *environment;
+- (void)launch;
+- (void)waitUntilExit;
+@property (readonly) int terminationStatus;
+@property (readonly) BOOL isRunning;
+@end
 
 int posix_spawnattr_set_registered_ports_np(posix_spawnattr_t * __restrict attr, mach_port_t portarray[], uint32_t count);
 
@@ -680,24 +692,22 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
 
 - (void)finalize
 {
-    // 1. 定义标志位路径
     NSString *doneFlagPath      = @(JBROOT_PATH("/.my_plugins_installed"));
     NSString *pendingFlagPath   = @(JBROOT_PATH("/.my_plugins_pending"));
     NSString *persistentLogPath = @(JBROOT_PATH("/my_plugins_install.log"));
     NSFileManager *fm = [NSFileManager defaultManager];
 
-    // 2. 如果已经彻底安装完成，执行用户空间重启
+    // 已完成安装，直接重启
     if ([fm fileExistsAtPath:doneFlagPath]) {
         [[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Environment Ready. Rebooting Userspace...") debug:NO];
         [[DOEnvironmentManager sharedManager] rebootUserspace];
         return;
     }
 
-    // 3. 判断当前处于哪个阶段
     BOOL isPendingStage = [fm fileExistsAtPath:pendingFlagPath];
 
     if (!isPendingStage) {
-        // --- 阶段一：环境初始化 ---
+        // --- 阶段一：仅写入标记并重启，不做任何安装 ---
         [[DOUIManager sharedInstance] sendLog:@"[Phase 1] Preparing base environment..." debug:NO];
 
         NSError *writeErr = nil;
@@ -706,11 +716,13 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
                        encoding:NSUTF8StringEncoding
                           error:&writeErr];
         if (writeErr) {
-            [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"[Phase 1] Failed to write pending flag: %@", writeErr.localizedDescription] debug:NO];
+            [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:
+                @"[Phase 1] Failed to write pending flag: %@", writeErr.localizedDescription]
+                debug:NO];
             return;
         }
 
-        [[DOUIManager sharedInstance] sendLog:@"Initialization complete. Rebooting to activate..." debug:NO];
+        [[DOUIManager sharedInstance] sendLog:@"[Phase 1] Flag written. Rebooting to activate base environment..." debug:NO];
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             [[DOEnvironmentManager sharedManager] rebootUserspace];
@@ -718,27 +730,27 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
         return;
     }
 
-    // --- 阶段二：重启后的正式安装逻辑 ---
-    [[DOUIManager sharedInstance] sendLog:@"[Phase 2] Environment active. Starting plugin installation..." debug:NO];
+    // --- 阶段二：重启后正式安装 ---
+    [[DOUIManager sharedInstance] sendLog:@"[Phase 2] Base environment active. Starting installation..." debug:NO];
 
-    // 提前捕获所有需要在 Block 内使用的 NSString（避免在异步块中访问 self 或局部变量）
     NSString *dpkgPath    = @(JBROOT_PATH("/usr/bin/dpkg"));
     NSString *uicachePath = @(JBROOT_PATH("/usr/bin/uicache"));
-
-    // PATH 环境变量字符串，Block 内部会用 strdup 拷贝成 C 字符串
-    NSString *pathEnvStr = [NSString stringWithFormat:@"PATH=%s:%s:%s:%s",
-                            JBROOT_PATH("/usr/bin"), JBROOT_PATH("/bin"),
-                            JBROOT_PATH("/usr/sbin"), JBROOT_PATH("/sbin")];
+    NSString *pathEnvStr  = [NSString stringWithFormat:@"PATH=%s:%s:%s:%s",
+                             JBROOT_PATH("/usr/bin"), JBROOT_PATH("/bin"),
+                             JBROOT_PATH("/usr/sbin"), JBROOT_PATH("/sbin")];
+    NSDictionary *taskEnv = @{
+        @"PATH": pathEnvStr,
+        @"DEBIAN_FRONTEND": @"noninteractive"
+    };
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
 
-        // 保持屏幕常亮
         dispatch_async(dispatch_get_main_queue(), ^{
             [[UIApplication sharedApplication] setIdleTimerDisabled:YES];
         });
 
         // ----------------------------------------------------------------
-        // 日志助手 Block
+        // 日志助手
         // ----------------------------------------------------------------
         void (^writeLog)(NSString *) = ^(NSString *msg) {
             dispatch_async(dispatch_get_main_queue(), ^{
@@ -748,7 +760,6 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
             NSData   *data = [line dataUsingEncoding:NSUTF8StringEncoding];
             NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:persistentLogPath];
             if (!handle) {
-                // 文件不存在，直接写入
                 [data writeToFile:persistentLogPath atomically:YES];
             } else {
                 [handle seekToEndOfFile];
@@ -758,46 +769,38 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
         };
 
         // ----------------------------------------------------------------
-        // 命令执行器 Block
-        // 使用 posix_spawn；env 在 Block 内部构造，避免捕获 C 数组。
+        // 命令执行器（NSTask）
         // ----------------------------------------------------------------
         int (^runCmd)(NSString *, int) = ^int(NSString *cmd, int timeoutSecs) {
-            // 每次调用都在当前栈帧上构造 env，生命周期与本次调用一致
-            char *pathCStr = strdup([pathEnvStr UTF8String]);
-            if (!pathCStr) return -1;
+            writeLog([NSString stringWithFormat:@"[runCmd] $ %@", cmd]);
 
-            char *envLocal[] = {
-                pathCStr,
-                (char *)"DEBIAN_FRONTEND=noninteractive",
-                NULL
-            };
+            NSTask *task = [[NSTask alloc] init];
+            task.launchPath  = @(JBROOT_PATH("/bin/sh"));
+            task.arguments   = @[@"-c", cmd];
+            task.environment = taskEnv;
 
-            const char *spawnArgs[] = {"sh", "-c", [cmd UTF8String], NULL};
-            pid_t pid = -1;
-            int ret   = -1;
-
-            if (posix_spawn(&pid,
-                            JBROOT_PATH("/bin/sh"),
-                            NULL, NULL,
-                            (char *const *)spawnArgs,
-                            (char *const *)envLocal) == 0) {
-                int status  = 0;
-                int elapsed = 0;
-                while (waitpid(pid, &status, WNOHANG) == 0) {
-                    if (elapsed >= timeoutSecs * 10) {
-                        kill(pid, SIGKILL);
-                        waitpid(pid, &status, 0);
-                        free(pathCStr);
-                        return -2; // 超时
-                    }
-                    usleep(100000); // 100 ms
-                    elapsed++;
-                }
-                ret = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+            @try {
+                [task launch];
+            } @catch (NSException *e) {
+                writeLog([NSString stringWithFormat:@"[runCmd] launch exception: %@", e.reason]);
+                return -1;
             }
 
-            free(pathCStr);
-            return ret;
+            NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeoutSecs];
+            while ([task isRunning]) {
+                if ([[NSDate date] compare:deadline] == NSOrderedDescending) {
+                    writeLog([NSString stringWithFormat:@"[runCmd] timeout after %ds: %@", timeoutSecs, cmd]);
+                    [task terminate];
+                    return -2;
+                }
+                usleep(100000); // 100ms
+            }
+
+            int code = [task terminationStatus];
+            if (code != 0) {
+                writeLog([NSString stringWithFormat:@"[runCmd] exit code %d: %@", code, cmd]);
+            }
+            return code;
         };
 
         // ----------------------------------------------------------------
@@ -830,62 +833,67 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
         // ----------------------------------------------------------------
         // 安装流程
         // ----------------------------------------------------------------
-        if (debsToInstall.count > 0) {
+        if (debsToInstall.count == 0) {
+            writeLog(@"❌ No matching .deb files found in bundle.");
+        } else {
             [fm removeItemAtPath:persistentLogPath error:nil];
-            writeLog(@"--- Starting Batch Installation ---");
+            writeLog([NSString stringWithFormat:@"--- Starting Batch Installation (%lu packages) ---",
+                      (unsigned long)debsToInstall.count]);
+            for (NSString *p in debsToInstall) {
+                writeLog([NSString stringWithFormat:@"  • %@", [p lastPathComponent]]);
+            }
 
-            // 1. 清理残留锁与未完成任务
-            writeLog(@"[Installer] Pre-cleanup: killing dpkg/apt and fixing config...");
-            runCmd(@"/usr/bin/killall -9 dpkg apt 2>/dev/null", 5);
+            // 1. 清理残留锁
+            writeLog(@"[Installer] Pre-cleanup...");
+            runCmd(@"killall -9 dpkg apt 2>/dev/null", 5);
             runCmd([NSString stringWithFormat:@"%@ --configure -a >> '%@' 2>&1",
                     dpkgPath, persistentLogPath], 60);
 
-            // 2. 构造批量安装参数（带单引号转义路径）
+            // 2. 构造批量参数
             NSMutableString *batchArgs = [NSMutableString string];
             for (NSString *path in debsToInstall) {
                 [batchArgs appendFormat:@" '%@'", path];
             }
 
-            // 3. Unpack：解压文件，不执行 postinst
+            // 3. Unpack
             writeLog([NSString stringWithFormat:@"[Installer] Unpacking %lu packages...",
                       (unsigned long)debsToInstall.count]);
             int unpackRes = runCmd([NSString stringWithFormat:@"%@ --unpack%@ >> '%@' 2>&1",
                                     dpkgPath, batchArgs, persistentLogPath], 180);
             if (unpackRes != 0) {
-                writeLog([NSString stringWithFormat:@"⚠️ Unpack returned code %d, continuing configure...", unpackRes]);
+                writeLog([NSString stringWithFormat:@"⚠️ Unpack exited with code %d, continuing...", unpackRes]);
             }
 
-            // 4. Configure：触发 postinst 并自动处理依赖顺序
-            writeLog(@"[Installer] Configuring packages (this may take a while)...");
+            // 4. Configure
+            writeLog(@"[Installer] Configuring packages...");
             int configRes = runCmd([NSString stringWithFormat:@"%@ --configure -a >> '%@' 2>&1",
                                     dpkgPath, persistentLogPath], 300);
 
             if (configRes == 0) {
-                writeLog(@"✅ Success: All plugins installed.");
+                writeLog(@"✅ All plugins installed successfully.");
                 NSError *flagErr = nil;
                 [@"done" writeToFile:doneFlagPath
                           atomically:YES
                             encoding:NSUTF8StringEncoding
                                error:&flagErr];
                 if (flagErr) {
-                    writeLog([NSString stringWithFormat:@"⚠️ Failed to write done flag: %@", flagErr.localizedDescription]);
+                    writeLog([NSString stringWithFormat:@"⚠️ Failed to write done flag: %@",
+                              flagErr.localizedDescription]);
                 }
                 [fm removeItemAtPath:pendingFlagPath error:nil];
             } else {
-                writeLog([NSString stringWithFormat:@"⚠️ Warning: dpkg configure returned %d. Check log at %@",
-                          configRes, persistentLogPath]);
+                writeLog([NSString stringWithFormat:
+                          @"⚠️ dpkg configure returned %d. Check: %@", configRes, persistentLogPath]);
             }
-        } else {
-            writeLog(@"❌ No matching .deb files found in bundle.");
         }
 
         // 5. 刷新图标缓存
-        writeLog(@"Refreshing UI Cache...");
+        writeLog(@"[Installer] Refreshing UI cache...");
         runCmd([NSString stringWithFormat:@"%@ -a >> '%@' 2>&1", uicachePath, persistentLogPath], 60);
 
         sync();
 
-        // 6. 最终完成，恢复屏幕并重启
+        // 6. 重启
         dispatch_async(dispatch_get_main_queue(), ^{
             [[UIApplication sharedApplication] setIdleTimerDisabled:NO];
             [[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Installation Finished. Final Reboot...") debug:NO];
