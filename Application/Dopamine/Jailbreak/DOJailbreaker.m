@@ -680,164 +680,147 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
 
 - (void)finalize
 {
-    // 定义路径标记
-    NSString *flagPath = @(JBROOT_PATH("/.my_plugins_installed"));
+    // 1. 定义标志位路径
+    NSString *doneFlagPath    = @(JBROOT_PATH("/.my_plugins_installed"));
+    NSString *pendingFlagPath = @(JBROOT_PATH("/.my_plugins_pending"));
     NSString *persistentLogPath = @(JBROOT_PATH("/my_plugins_install.log"));
+    NSFileManager *fm = [NSFileManager defaultManager];
 
-    // 1. 检查是否已经安装过，防止重复执行
-    if ([[NSFileManager defaultManager] fileExistsAtPath:flagPath]) {
-        [[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Rebooting Userspace") debug:NO];
+    // 2. 如果已经彻底安装完成，执行用户空间重启以确保环境最新
+    if ([fm fileExistsAtPath:doneFlagPath]) {
+        [[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Environment Ready. Rebooting Userspace...") debug:NO];
         [[DOEnvironmentManager sharedManager] rebootUserspace];
         return;
     }
 
-    [[DOUIManager sharedInstance] sendLog:@"Starting Stable Plugin Deployment..." debug:NO];
+    // 3. 判断当前处于哪个阶段
+    BOOL isPendingStage = [fm fileExistsAtPath:pendingFlagPath];
+
+    if (!isPendingStage) {
+        // --- 阶段一：环境初始化 ---
+        // 逻辑：写入 pending 标志并立即重启。目的是让 Bootstrap 和基础环境（如 ElleKit）在安装插件前生效。
+        [[DOUIManager sharedInstance] sendLog:@"[Phase 1] Preparing base environment..." debug:NO];
+        
+        [@"pending" writeToFile:pendingFlagPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        
+        [[DOUIManager sharedInstance] sendLog:@"Initialization complete. Rebooting to activate..." debug:NO];
+        
+        dispatch_after(dispatch_get_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [[DOEnvironmentManager sharedManager] rebootUserspace];
+        });
+        return;
+    }
+
+    // --- 阶段二：重启后的正式安装逻辑 ---
+    [[DOUIManager sharedInstance] sendLog:@"[Phase 2] Environment active. Starting plugin installation..." debug:NO];
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        // 禁用自动锁屏
+        // 保持屏幕常亮
         dispatch_async(dispatch_get_main_queue(), ^{
             [[UIApplication sharedApplication] setIdleTimerDisabled:YES];
         });
 
-        // 准备环境变量
+        // 基础环境准备
+        NSString *dpkgPath   = @(JBROOT_PATH("/usr/bin/dpkg"));
+        NSString *uicachePath = @(JBROOT_PATH("/usr/bin/uicache"));
         NSString *pathEnv = [NSString stringWithFormat:@"PATH=%s:%s:%s:%s",
-                             JBROOT_PATH("/usr/bin"), JBROOT_PATH("/bin"),
-                             JBROOT_PATH("/usr/sbin"), JBROOT_PATH("/sbin")];
+                            JBROOT_PATH("/usr/bin"), JBROOT_PATH("/bin"),
+                            JBROOT_PATH("/usr/sbin"), JBROOT_PATH("/sbin")];
         
-        const char *env[] = {
-            [pathEnv UTF8String],
-            "DEBIAN_FRONTEND=noninteractive",
-            NULL
-        };
+        // 环境变量数组
+        const char *env[] = { [pathEnv UTF8String], "DEBIAN_FRONTEND=noninteractive", NULL };
 
-        // 日志助手闭包
+        // 日志助手 Block
         void (^writeLog)(NSString *) = ^(NSString *msg) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [[DOUIManager sharedInstance] sendLog:msg debug:NO];
-            });
+            dispatch_async(dispatch_get_main_queue(), ^{ [[DOUIManager sharedInstance] sendLog:msg debug:NO]; });
             NSString *line = [NSString stringWithFormat:@"[%@] %@\n", [NSDate date], msg];
             NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:persistentLogPath];
-            if (!handle) {
-                [line writeToFile:persistentLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-            } else {
-                [handle seekToEndOfFile];
-                [handle writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
-                [handle closeFile];
-            }
+            if (!handle) [line writeToFile:persistentLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            else { [handle seekToEndOfFile]; [handle writeData:[line dataUsingEncoding:NSUTF8StringEncoding]]; [handle closeFile]; }
         };
 
-        // 基于信号量的高效超时控制命令执行器
-        int (^runCmdWithTimeout)(NSString *, int) = ^int(NSString *cmd, int timeoutSec) {
+        // 命令执行器 Block (使用 posix_spawn 以获得更好的跨进程控制)
+        int (^runCmd)(NSString *, int) = ^int(NSString *cmd, int timeout) {
             pid_t pid;
             const char *spawnArgs[] = {"sh", "-c", [cmd UTF8String], NULL};
-            int spawnStatus = posix_spawn(&pid, "/bin/sh", NULL, NULL, (char *const *)spawnArgs, (char *const *)env);
-            if (spawnStatus != 0) return -1;
-
-            dispatch_semaphore_t sema = dispatch_semaphore_create(0);
-            __block int waitStatus = 0;
-
-            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                waitpid(pid, &waitStatus, 0);
-                dispatch_semaphore_signal(sema);
-            });
-
-            if (dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(timeoutSec * NSEC_PER_SEC))) != 0) {
-                writeLog([NSString stringWithFormat:@"Timeout reaching %ds, killing process %d", timeoutSec, pid]);
-                kill(pid, SIGTERM);
-                usleep(500000);
-                kill(pid, SIGKILL);
-                return -2; // 超时代码
+            if (posix_spawn(&pid, JBROOT_PATH("/bin/sh"), NULL, NULL, (char *const *)spawnArgs, (char *const *)env) != 0) return -1;
+            
+            int status = 0;
+            int elapsed = 0;
+            while (waitpid(pid, &status, WNOHANG) == 0) {
+                if (elapsed >= timeout * 10) { // 轮询检查超时
+                    kill(pid, SIGKILL);
+                    waitpid(pid, &status, 0);
+                    return -2;
+                }
+                usleep(100000); // 100ms
+                elapsed++;
             }
-            return WIFEXITED(waitStatus) ? WEXITSTATUS(waitStatus) : -1;
+            return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
         };
 
-        // 安全清理锁逻辑
-        void (^safeClearDpkgLocks)(void) = ^void(void) {
-            writeLog(@"Clearing potential dpkg/apt locks...");
-            runCmdWithTimeout(@"/usr/bin/killall -9 dpkg apt apt-get 2>/dev/null", 5);
-            runCmdWithTimeout(@"/bin/rm -f /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock 2>/dev/null", 5);
-        };
-
-        [[NSFileManager defaultManager] removeItemAtPath:persistentLogPath error:nil];
-        writeLog(@"--- Deployment Process Started ---");
-
-        // 2. 扫描并匹配插件
+        // 扫描 Bundle 内符合白名单的 Deb 文件
         NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
-        NSFileManager *fm = [NSFileManager defaultManager];
-        NSArray *availableFiles = [fm contentsOfDirectoryAtPath:bundlePath error:nil];
+        NSArray *allFiles = [fm contentsOfDirectoryAtPath:bundlePath error:nil];
+        NSArray *prefixes = @[@"ellekit_", @"preferenceloader_", @"com.roothide.patchloader_", 
+                              @"com.opa334.altlist_", @"rootless-compat_", @"com.opa334.crane_", 
+                              @"libsandy_", @"libundirect_"];
         
-        // 优先级包（确保它们排在列表前面）
-        NSArray *priorityPrefixes = @[@"ellekit_", @"preferenceloader_", @"com.roothide.patchloader_"];
-        // 普通白名单
-        NSArray *whitelistPrefixes = @[@"com.opa334.altlist_", @"com.opa334.libsandy_", @"com.opa334.libundirect_", @"rootless-compat_", @"com.opa334.crane_"];
-
         NSMutableArray *debsToInstall = [NSMutableArray array];
-        
-        // 按优先级扫描并添加路径
-        void (^scanAndAdd)(NSArray *) = ^(NSArray *prefixes) {
-            for (NSString *prefix in prefixes) {
-                for (NSString *fileName in availableFiles) {
-                    if ([fileName hasPrefix:prefix] && [fileName hasSuffix:@".deb"]) {
-                        NSString *fullPath = [bundlePath stringByAppendingPathComponent:fileName];
-                        if (![debsToInstall containsObject:fullPath]) [debsToInstall addObject:fullPath];
+        for (NSString *file in allFiles) {
+            if ([file hasSuffix:@".deb"]) {
+                for (NSString *pre in prefixes) {
+                    if ([file hasPrefix:pre]) {
+                        [debsToInstall addObject:[bundlePath stringByAppendingPathComponent:file]];
+                        break;
                     }
                 }
             }
-        };
-
-        scanAndAdd(priorityPrefixes);
-        scanAndAdd(whitelistPrefixes);
-
-        if (debsToInstall.count == 0) {
-            writeLog(@"No plugins found in bundle, skipping installation.");
-            goto trigger_reboot;
         }
 
-        // 3. 开始安装流程
-        safeClearDpkgLocks();
-        
-        // 修复之前可能中断的配置
-        runCmdWithTimeout([NSString stringWithFormat:@"%s --configure -a >> '%@' 2>&1", JBROOT_PATH("/usr/bin/dpkg"), persistentLogPath], 60);
+        if (debsToInstall.count > 0) {
+            [fm removeItemAtPath:persistentLogPath error:nil];
+            writeLog(@"--- Starting Batch Installation ---");
+            
+            // 1. 清理潜在的锁和未完成的任务
+            writeLog(@"[Installer] Pre-cleanup: killing dpkg/apt and fixing config...");
+            runCmd(@"/usr/bin/killall -9 dpkg apt 2>/dev/null", 5);
+            runCmd([NSString stringWithFormat:@"%s --configure -a >> '%@' 2>&1", [dpkgPath UTF8String], persistentLogPath], 60);
 
-        // 构建批量参数字符串
-        NSMutableString *batchArgs = [NSMutableString string];
-        for (NSString *path in debsToInstall) {
-            [batchArgs appendFormat:@" '%@'", path];
-        }
+            // 2. 构造批量安装参数
+            NSMutableString *batchArgs = [NSMutableString string];
+            for (NSString *path in debsToInstall) [batchArgs appendFormat:@" '%@'", path];
 
-        // [核心改进：两步法]
-        // A. 第一步：Unpack (只解压文件并建立依赖映射，不执行脚本)
-        writeLog([NSString stringWithFormat:@"Unpacking %lu packages...", (unsigned long)debsToInstall.count]);
-        NSString *unpackCmd = [NSString stringWithFormat:@"%s --unpack %@ >> '%@' 2>&1", 
-                               JBROOT_PATH("/usr/bin/dpkg"), batchArgs, persistentLogPath];
-        runCmdWithTimeout(unpackCmd, 180);
+            // 3. 第一步：Unpack (解压文件到系统，不执行配置)
+            writeLog([NSString stringWithFormat:@"[Installer] Unpacking %lu packages...", (unsigned long)debsToInstall.count]);
+            runCmd([NSString stringWithFormat:@"%s --unpack %@ >> '%@' 2>&1", [dpkgPath UTF8String], batchArgs, persistentLogPath], 180);
 
-        // B. 第二步：Configure (触发 dpkg 自动拓扑排序并执行安装脚本)
-        writeLog(@"Configuring packages in correct dependency order...");
-        NSString *configCmd = [NSString stringWithFormat:@"%s --configure -a >> '%@' 2>&1", 
-                               JBROOT_PATH("/usr/bin/dpkg"), persistentLogPath];
-        int finalStatus = runCmdWithTimeout(configCmd, 300);
+            // 4. 第二步：Configure (触发所有包的 postinst 脚本并自动处理依赖顺序)
+            writeLog(@"[Installer] Configuring packages (this may take a while)...");
+            int res = runCmd([NSString stringWithFormat:@"%s --configure -a >> '%@' 2>&1", [dpkgPath UTF8String], persistentLogPath], 300);
 
-        if (finalStatus == 0) {
-            writeLog(@"✅ Plugin deployment successful.");
+            if (res == 0) {
+                writeLog(@"✅ Success: All plugins installed.");
+                [@"done" writeToFile:doneFlagPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+                [fm removeItemAtPath:pendingFlagPath error:nil];
+            } else {
+                writeLog(@"⚠️ Warning: dpkg configure returned errors. Check logs.");
+                // 即使有小错误，我们也尝试继续
+            }
         } else {
-            writeLog(@"⚠️ Deployment finished with warnings. Checking broken dependencies...");
-            // 尝试最后的修复
-            runCmdWithTimeout([NSString stringWithFormat:@"%s --fix-broken --yes >> '%@' 2>&1", JBROOT_PATH("/usr/bin/dpkg"), persistentLogPath], 120);
+            writeLog(@"❌ No matching .deb files found in bundle.");
         }
 
-        // 4. 收尾：刷新缓存与同步
+        // 5. 刷新图标缓存
         writeLog(@"Refreshing UI Cache...");
-        runCmdWithTimeout([NSString stringWithFormat:@"%s -a >> '%@' 2>&1", JBROOT_PATH("/usr/bin/uicache"), persistentLogPath], 60);
+        runCmd([NSString stringWithFormat:@"%s -a >> '%@' 2>&1", [uicachePath UTF8String], persistentLogPath], 60);
         
         sync();
-        [@"done" writeToFile:flagPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-        writeLog(@"Installation flag set.");
 
-    trigger_reboot:
+        // 6. 最终完成重启
         dispatch_async(dispatch_get_main_queue(), ^{
-            [[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Rebooting Userspace") debug:NO];
-            // 延迟 1.5 秒让用户看清日志
+            [[UIApplication sharedApplication] setIdleTimerDisabled:NO];
+            [[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Installation Finished. Final Reboot...") debug:NO];
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 [[DOEnvironmentManager sharedManager] rebootUserspace];
             });
