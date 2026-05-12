@@ -66,7 +66,9 @@ typedef NS_ENUM(NSInteger, JBErrorCode) {
 - (NSError *)gatherSystemInformation
 {
     NSString *kernelPath = [[DOEnvironmentManager sharedManager] accessibleKernelPath];
-    if (!kernelPath) return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedToFindKernel userInfo:@{NSLocalizedDescriptionKey:@"Failed to find kernelcache. Ensure your device is properly [...]
+    if (!kernelPath) {
+        return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedToFindKernel userInfo:@{NSLocalizedDescriptionKey:@"Failed to find kernelcache. Ensure your device is properly [...]"}];
+    }
     NSLog(@"Kernel at %s", kernelPath.UTF8String);
 
     [[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Patchfinding") debug:NO];
@@ -122,12 +124,14 @@ sets[idx] = NULL;
             });
         }
         if (!_systemInfoXdict) {
-            return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedKernelPatchfinding userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"XPF failed with error: (%s)", [...]
+            NSString *errorMsg = @"XPF failed with error";
+            return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedKernelPatchfinding userInfo:@{NSLocalizedDescriptionKey:errorMsg}];
         }
         xpf_stop();
     }
     else {
-        NSError *error = [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedKernelPatchfinding userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"XPF start failed with er[...]
+        NSString *errorMsg = @"XPF start failed";
+        NSError *error = [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedKernelPatchfinding userInfo:@{NSLocalizedDescriptionKey:errorMsg}];
         xpf_stop();
         return error;
     }
@@ -167,7 +171,9 @@ sets[idx] = NULL;
     }
 
     [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:DOLocalizedString(@"Exploiting Kernel (%@)"), kernelExploit.name] debug:NO];
-    if ([kernelExploit load] != 0) return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedLoadingExploit userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"Failed to l[...]
+    if ([kernelExploit load] != 0) {
+        return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedLoadingExploit userInfo:@{NSLocalizedDescriptionKey:@"Failed to load exploit"}];
+    }
     if ([kernelExploit run] != 0) return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedExploitation userInfo:@{NSLocalizedDescriptionKey:@"Failed to exploit kernel"}];
 
     jbinfo_initialize_boot_constants();
@@ -176,16 +182,16 @@ sets[idx] = NULL;
 
     if (pacBypass) {
         [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:DOLocalizedString(@"Bypassing PAC (%@)"), pacBypass.name] debug:NO];
-        if ([pacBypass load] != 0) {[kernelExploit cleanup]; return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedLoadingExploit userInfo:@{NSLocalizedDescriptionKey:[NSString stri[...]
-        if ([pacBypass run] != 0) {[kernelExploit cleanup]; return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedExploitation userInfo:@{NSLocalizedDescriptionKey:@"Failed to bypas[...]
+        if ([pacBypass load] != 0) {[kernelExploit cleanup]; return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedLoadingExploit userInfo:@{NSLocalizedDescriptionKey:@"Failed to load PAC bypass"}];}
+        if ([pacBypass run] != 0) {[kernelExploit cleanup]; return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedExploitation userInfo:@{NSLocalizedDescriptionKey:@"Failed to bypass PAC"}];}
         // At this point we presume the PAC bypass has given us stable kcall primitives
         gSystemInfo.jailbreakInfo.usesPACBypass = true;
     }
 
     if ([[DOEnvironmentManager sharedManager] isPPLBypassRequired]) {
         [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:DOLocalizedString(@"Bypassing PPL (%@)"), pplBypass.name] debug:NO];
-        if ([pplBypass load] != 0) {[pacBypass cleanup]; [kernelExploit cleanup]; return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedLoadingExploit userInfo:@{NSLocalizedDescript[...]
-        if ([pplBypass run] != 0) {[pacBypass cleanup]; [kernelExploit cleanup]; return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedExploitation userInfo:@{NSLocalizedDescription[...]
+        if ([pplBypass load] != 0) {[pacBypass cleanup]; [kernelExploit cleanup]; return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedLoadingExploit userInfo:@{NSLocalizedDescriptionKey:@"Failed to load PPL bypass"}];}
+        if ([pplBypass run] != 0) {[pacBypass cleanup]; [kernelExploit cleanup]; return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedExploitation userInfo:@{NSLocalizedDescriptionKey:@"Failed to bypass PPL"}];}
         // At this point we presume the PPL bypass gave us unrestricted phys write primitives
     }
     if (!gPrimitives.kalloc_global) {
@@ -210,7 +216,8 @@ sets[idx] = NULL;
         r = libjailbreak_physrw_init(false);
     }
     if (r != 0) {
-        return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedBuildingPhysRW userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"Failed to build phys r/w primitive: %d[...]
+        NSString *errorMsg = [NSString stringWithFormat:@"Failed to build phys r/w primitive: %d", r];
+        return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedBuildingPhysRW userInfo:@{NSLocalizedDescriptionKey:errorMsg}];
     }
     return nil;
 }
@@ -218,7 +225,10 @@ sets[idx] = NULL;
 - (NSError *)cleanUpExploits
 {
     int r = [[DOExploitManager sharedManager] cleanUpExploits];
-    if (r != 0) return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedCleanup userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"Failed to cleanup exploits: %d", r]}][...]
+    if (r != 0) {
+        NSString *errorMsg = [NSString stringWithFormat:@"Failed to cleanup exploits: %d", r];
+        return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedCleanup userInfo:@{NSLocalizedDescriptionKey:errorMsg}];
+    }
     return nil;
 }
 
@@ -246,15 +256,24 @@ sets[idx] = NULL;
         kwrite32(proc + koffsetof(proc, flag), flag);
     }
 
-    if (getuid() != 0) return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedGetRoot userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"Failed to get root, uid still [...]
-    if (getgid() != 0) return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedGetRoot userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"Failed to get root, gid still [...]
+    if (getuid() != 0) {
+        NSString *errorMsg = [NSString stringWithFormat:@"Failed to get root, uid still %d", getuid()];
+        return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedGetRoot userInfo:@{NSLocalizedDescriptionKey:errorMsg}];
+    }
+    if (getgid() != 0) {
+        NSString *errorMsg = [NSString stringWithFormat:@"Failed to get root, gid still %d", getgid()];
+        return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedGetRoot userInfo:@{NSLocalizedDescriptionKey:errorMsg}];
+    }
 
     // Unsandbox
     uint64_t label = kread_ptr(ucred + koffsetof(ucred, label));
     mac_label_set(label, 1, -1);
     NSError *error = nil;
     [[NSFileManager defaultManager] contentsOfDirectoryAtPath:@"/var" error:&error];
-    if (error) return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedUnsandbox userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"Failed to unsandbox, /var does not s[...]
+    if (error) {
+        NSString *errorMsg = @"Failed to unsandbox, /var does not seem accessible";
+        return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedUnsandbox userInfo:@{NSLocalizedDescriptionKey:errorMsg}];
+    }
     setenv("HOME", "/var/root", true);
     setenv("CFFIXED_USER_HOME", "/var/root", true);
     setenv("TMPDIR", "/var/tmp", true);
@@ -263,7 +282,7 @@ sets[idx] = NULL;
     proc_csflags_set(proc, CS_PLATFORM_BINARY);
     uint32_t csflags;
     csops(getpid(), CS_OPS_STATUS, &csflags, sizeof(csflags));
-    if (!(csflags & CS_PLATFORM_BINARY)) return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedPlatformize userInfo:@{NSLocalizedDescriptionKey:@"Failed to get CS_PLATFORM_BINARY"}][...]
+    if (!(csflags & CS_PLATFORM_BINARY)) return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedPlatformize userInfo:@{NSLocalizedDescriptionKey:@"Failed to get CS_PLATFORM_BINARY"}];
 
 /**************************** roothide specific ********************/
     proc_csflags_set(proc, CS_INSTALLER);
@@ -348,7 +367,8 @@ void *boomerang_server(struct boomerang_info *info)
     const char *jbctlPath = JBROOT_PATH("/basebin/jbctl");
     int spawnError = posix_spawn(&spawnedPid, jbctlPath, NULL, &attr, (char *const *)(const char *[]){ jbctlPath, "internal", "launchd_stash_port", NULL }, NULL);
     if (spawnError != 0) {
-        return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedLaunchdInjection userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Spawning jbctl failed with error c[...]
+        NSString *errorMsg = [NSString stringWithFormat:@"Spawning jbctl failed with error code %d", spawnError];
+        return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedLaunchdInjection userInfo:@{NSLocalizedDescriptionKey : errorMsg}];
     }
     posix_spawnattr_destroy(&attr);
     int status = 0;
@@ -361,7 +381,8 @@ void *boomerang_server(struct boomerang_info *info)
     // Inject launchdhook.dylib into launchd via opainject
     int r = exec_cmd(JBROOT_PATH("/basebin/opainject"), "1", JBROOT_PATH("/basebin/launchdhook.dylib"), NULL);
     if (r != 0) {
-        return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedLaunchdInjection userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"opainject failed with error code %[...]
+        NSString *errorMsg = [NSString stringWithFormat:@"opainject failed with error code %d", r];
+        return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedLaunchdInjection userInfo:@{NSLocalizedDescriptionKey : errorMsg}];
     }
 
     // Wait for everything to finish
@@ -388,7 +409,8 @@ void *boomerang_server(struct boomerang_info *info)
                 [dopamineInstalledAppIds addObject:appId];
             }
             else {
-                return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedDuplicateApps userInfo:@{ NSLocalizedDescriptionKey : [NSString stringWithFormat:DOLocalizedString(@"Duplicate_[...]
+                NSString *errorMsg = [NSString stringWithFormat:DOLocalizedString(@"Duplicate_App_Error"), appId];
+                return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedDuplicateApps userInfo:@{ NSLocalizedDescriptionKey : errorMsg}];
             }
         }
     }
@@ -420,7 +442,8 @@ void *boomerang_server(struct boomerang_info *info)
             [duplicateAppsString appendString:duplicateApp];
         }
         [duplicateAppsString appendString:@"]"];
-        return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedDuplicateApps userInfo:@{ NSLocalizedDescriptionKey : [NSString stringWithFormat:DOLocalizedString(@"Duplicate_Apps_Err[...]
+        NSString *errorMsg = [NSString stringWithFormat:DOLocalizedString(@"Duplicate_Apps_Error"), duplicateAppsString];
+        return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedDuplicateApps userInfo:@{ NSLocalizedDescriptionKey : errorMsg}];
     }
 
     for (NSString *dopamineAppId in dopamineInstalledAppIds) {
@@ -428,7 +451,8 @@ void *boomerang_server(struct boomerang_info *info)
         if (appProxy.installed) {
             NSString *appProxyPath = [[appProxy.bundleURL.path stringByResolvingSymlinksInPath] stringByStandardizingPath];
             if (![appProxyPath hasPrefix:dopamineAppsPath]) {
-                return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedDuplicateApps userInfo:@{ NSLocalizedDescriptionKey : [NSString stringWithFormat:DOLocalizedString(@"Duplicate_[...]
+                NSString *errorMsg = [NSString stringWithFormat:DOLocalizedString(@"Duplicate_App_Error"), dopamineAppId];
+                return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedDuplicateApps userInfo:@{ NSLocalizedDescriptionKey : errorMsg}];
             }
         }
     }
@@ -461,7 +485,7 @@ void *boomerang_server(struct boomerang_info *info)
 
     struct utsname systemInfo;
     uname(&systemInfo);
-    NSString *startLog = [NSString stringWithFormat:@"Starting Jailbreak (Model: %s, %@, Configuration: {removeJailbreak=%d, tweakInjection=%d, idownload=%d, appJIT=%d})", systemInfo.machine, NSP[...]
+    NSString *startLog = [NSString stringWithFormat:@"Starting Jailbreak (Model: %s, removeJailbreak=%d, tweakInjection=%d, idownload=%d, appJIT=%d)", systemInfo.machine, removeJailbreakEnabled, tweaksEnabled, idownloadEnabled, appJITEnabled];
     [[DOUIManager sharedInstance] sendLog:startLog debug:YES];
 
     *errOut = [self gatherSystemInformation];
@@ -534,13 +558,15 @@ void *boomerang_server(struct boomerang_info *info)
 
 int ret = basebin_generate(false);
 if (ret != 0) {
-    *errOut = [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedInitFakeLib userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Creating fakelib failed with error: %d",[...]
+    NSString *errorMsg = [NSString stringWithFormat:@"Creating fakelib failed with error: %d", ret];
+    *errOut = [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedInitFakeLib userInfo:@{NSLocalizedDescriptionKey : errorMsg}];
     return;
 }
 
 ret = ensure_dyld_trustcache(JBROOT_PATH("/basebin/.fakelib/dyld"));
 if (ret != 0) {
-    *errOut = [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedInitFakeLib userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to upload dyld trustcache: %d", r[...]
+    NSString *errorMsg = [NSString stringWithFormat:@"Failed to upload dyld trustcache: %d", ret];
+    *errOut = [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedInitFakeLib userInfo:@{NSLocalizedDescriptionKey : errorMsg}];
     return;
 }
 
