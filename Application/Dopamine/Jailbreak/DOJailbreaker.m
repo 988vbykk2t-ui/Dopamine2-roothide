@@ -30,23 +30,10 @@
 #import <libjailbreak/basebin_gen.h>
 #import <CoreServices/LSApplicationProxy.h>
 #import <sys/utsname.h>
-// 增加了 wait
 #import <sys/wait.h>
 #import <spawn.h>
 #import <signal.h>
-
-// 在文件顶部添加 NSTask 声明
-@interface NSTask : NSObject
-- (instancetype)init;
-@property (copy) NSString *launchPath;
-@property (copy) NSArray  *arguments;
-@property (copy) NSDictionary *environment;
-- (void)launch;
-- (void)waitUntilExit;
-- (int)processIdentifier;  // 添加这一行
-@property (readonly) int terminationStatus;
-@property (readonly) BOOL isRunning;
-@end
+#import <time.h>
 
 int posix_spawnattr_set_registered_ports_np(posix_spawnattr_t * __restrict attr, mach_port_t portarray[], uint32_t count);
 
@@ -55,8 +42,6 @@ void _CFPreferencesSetValueWithContainer(CFStringRef key, CFPropertyListRef valu
 Boolean _CFPreferencesSynchronizeWithContainer(CFStringRef applicationID, CFStringRef userName, CFStringRef hostName, CFStringRef containerPath);
 CFArrayRef _CFPreferencesCopyKeyListWithContainer(CFStringRef applicationID, CFStringRef userName, CFStringRef hostName, CFStringRef containerPath);
 CFDictionaryRef _CFPreferencesCopyMultipleWithContainer(CFArrayRef keysToFetch, CFStringRef applicationID, CFStringRef userName, CFStringRef hostName, CFStringRef containerPath);
-
-//char *_dirhelper(int a, char *dst, size_t size);
 
 NSString *const JBErrorDomain = @"JBErrorDomain";
 typedef NS_ENUM(NSInteger, JBErrorCode) {
@@ -137,12 +122,12 @@ sets[idx] = NULL;
             });
         }
         if (!_systemInfoXdict) {
-            return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedKernelPatchfinding userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"XPF failed with error: (%s)", xpf_g[...]
+            return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedKernelPatchfinding userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"XPF failed with error: (%s)", [...]
         }
         xpf_stop();
     }
     else {
-        NSError *error = [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedKernelPatchfinding userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"XPF start failed with error: [...]
+        NSError *error = [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedKernelPatchfinding userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"XPF start failed with er[...]
         xpf_stop();
         return error;
     }
@@ -182,7 +167,7 @@ sets[idx] = NULL;
     }
 
     [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:DOLocalizedString(@"Exploiting Kernel (%@)"), kernelExploit.name] debug:NO];
-    if ([kernelExploit load] != 0) return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedLoadingExploit userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"Failed to load k[...]
+    if ([kernelExploit load] != 0) return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedLoadingExploit userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"Failed to l[...]
     if ([kernelExploit run] != 0) return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedExploitation userInfo:@{NSLocalizedDescriptionKey:@"Failed to exploit kernel"}];
 
     jbinfo_initialize_boot_constants();
@@ -191,16 +176,16 @@ sets[idx] = NULL;
 
     if (pacBypass) {
         [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:DOLocalizedString(@"Bypassing PAC (%@)"), pacBypass.name] debug:NO];
-        if ([pacBypass load] != 0) {[kernelExploit cleanup]; return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedLoadingExploit userInfo:@{NSLocalizedDescriptionKey:[NSString stringWit[...]
-        if ([pacBypass run] != 0) {[kernelExploit cleanup]; return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedExploitation userInfo:@{NSLocalizedDescriptionKey:@"Failed to bypass PAC[...]
+        if ([pacBypass load] != 0) {[kernelExploit cleanup]; return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedLoadingExploit userInfo:@{NSLocalizedDescriptionKey:[NSString stri[...]
+        if ([pacBypass run] != 0) {[kernelExploit cleanup]; return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedExploitation userInfo:@{NSLocalizedDescriptionKey:@"Failed to bypas[...]
         // At this point we presume the PAC bypass has given us stable kcall primitives
         gSystemInfo.jailbreakInfo.usesPACBypass = true;
     }
 
     if ([[DOEnvironmentManager sharedManager] isPPLBypassRequired]) {
         [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:DOLocalizedString(@"Bypassing PPL (%@)"), pplBypass.name] debug:NO];
-        if ([pplBypass load] != 0) {[pacBypass cleanup]; [kernelExploit cleanup]; return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedLoadingExploit userInfo:@{NSLocalizedDescriptionKeyKe[...]
-        if ([pplBypass run] != 0) {[pacBypass cleanup]; [kernelExploit cleanup]; return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedExploitation userInfo:@{NSLocalizedDescriptionKey:@[...]
+        if ([pplBypass load] != 0) {[pacBypass cleanup]; [kernelExploit cleanup]; return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedLoadingExploit userInfo:@{NSLocalizedDescript[...]
+        if ([pplBypass run] != 0) {[pacBypass cleanup]; [kernelExploit cleanup]; return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedExploitation userInfo:@{NSLocalizedDescription[...]
         // At this point we presume the PPL bypass gave us unrestricted phys write primitives
     }
     if (!gPrimitives.kalloc_global) {
@@ -225,7 +210,7 @@ sets[idx] = NULL;
         r = libjailbreak_physrw_init(false);
     }
     if (r != 0) {
-        return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedBuildingPhysRW userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"Failed to build phys r/w primitive: %d", r][...]
+        return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedBuildingPhysRW userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"Failed to build phys r/w primitive: %d[...]
     }
     return nil;
 }
@@ -233,7 +218,7 @@ sets[idx] = NULL;
 - (NSError *)cleanUpExploits
 {
     int r = [[DOExploitManager sharedManager] cleanUpExploits];
-    if (r != 0) return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedCleanup userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"Failed to cleanup exploits: %d", r]}];
+    if (r != 0) return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedCleanup userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"Failed to cleanup exploits: %d", r]}][...]
     return nil;
 }
 
@@ -261,45 +246,24 @@ sets[idx] = NULL;
         kwrite32(proc + koffsetof(proc, flag), flag);
     }
 
-    if (getuid() != 0) return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedGetRoot userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"Failed to get root, uid still %d", [...]
-    if (getgid() != 0) return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedGetRoot userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"Failed to get root, gid still %d", [...]
+    if (getuid() != 0) return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedGetRoot userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"Failed to get root, uid still [...]
+    if (getgid() != 0) return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedGetRoot userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"Failed to get root, gid still [...]
 
     // Unsandbox
     uint64_t label = kread_ptr(ucred + koffsetof(ucred, label));
     mac_label_set(label, 1, -1);
     NSError *error = nil;
     [[NSFileManager defaultManager] contentsOfDirectoryAtPath:@"/var" error:&error];
-    if (error) return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedUnsandbox userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"Failed to unsandbox, /var does not seem a[...]
+    if (error) return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedUnsandbox userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"Failed to unsandbox, /var does not s[...]
     setenv("HOME", "/var/root", true);
     setenv("CFFIXED_USER_HOME", "/var/root", true);
     setenv("TMPDIR", "/var/tmp", true);
-
-    // FUCKING dirhelper caches the temporary path
-    // So we have to do userland patchfinding to find the fucking string and overwrite it
-    /*char **pain = NULL;
-    uint32_t *dirhelperData = (uint32_t *)_dirhelper;
-    for (int i = 0; i < 100; i++) {
-        arm64_register destinationReg;
-        uint64_t imm = 0;
-        if (arm64_dec_ldr_imm(dirhelperData[i], &destinationReg, NULL, &imm, NULL, NULL) == 0) {
-            if (ARM64_REG_GET_NUM(destinationReg) == 1) {
-                uint32_t *adrpAddr = &dirhelperData[i - 1];
-                uint64_t adrpTarget = 0;
-                uint32_t adrpInst = *adrpAddr;
-                if (arm64_dec_adr_p(adrpInst, (uint64_t)adrpAddr, &adrpTarget, NULL, NULL) == 0) {
-                    pain = (char **)(uint64_t)(adrpTarget + imm);
-                    break;
-                }
-            }
-        }
-    }
-    *pain = strdup("/var/tmp");*/
 
     // Get CS_PLATFORM_BINARY
     proc_csflags_set(proc, CS_PLATFORM_BINARY);
     uint32_t csflags;
     csops(getpid(), CS_OPS_STATUS, &csflags, sizeof(csflags));
-    if (!(csflags & CS_PLATFORM_BINARY)) return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedPlatformize userInfo:@{NSLocalizedDescriptionKey:@"Failed to get CS_PLATFORM_BINARY"}];
+    if (!(csflags & CS_PLATFORM_BINARY)) return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedPlatformize userInfo:@{NSLocalizedDescriptionKey:@"Failed to get CS_PLATFORM_BINARY"}][...]
 
 /**************************** roothide specific ********************/
     proc_csflags_set(proc, CS_INSTALLER);
@@ -328,19 +292,6 @@ sets[idx] = NULL;
     return nil;
 }
 
-/*
-- (NSError *)loadBasebinTrustcache
-{
-    trustcache_file_v1 *basebinTcFile = NULL;
-    if (trustcache_file_build_from_path([[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"basebin.tc"].fileSystemRepresentation, &basebinTcFile) == 0) {
-        int r = trustcache_file_upload_with_uuid(basebinTcFile, BASEBIN_TRUSTCACHE_UUID);
-        free(basebinTcFile);
-        if (r != 0) return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedBasebinTrustcache userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to upload BaseBin t[...]
-        return nil;
-    }
-    return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedBasebinTrustcache userInfo:@{NSLocalizedDescriptionKey : @"Failed to load BaseBin trustcache"}];
-}
-*/
 /************************ roothide specific ******************/
 - (NSError *)loadBasebinTrustcache
 {
@@ -397,7 +348,7 @@ void *boomerang_server(struct boomerang_info *info)
     const char *jbctlPath = JBROOT_PATH("/basebin/jbctl");
     int spawnError = posix_spawn(&spawnedPid, jbctlPath, NULL, &attr, (char *const *)(const char *[]){ jbctlPath, "internal", "launchd_stash_port", NULL }, NULL);
     if (spawnError != 0) {
-        return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedLaunchdInjection userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Spawning jbctl failed with error code %[...]
+        return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedLaunchdInjection userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Spawning jbctl failed with error c[...]
     }
     posix_spawnattr_destroy(&attr);
     int status = 0;
@@ -410,7 +361,7 @@ void *boomerang_server(struct boomerang_info *info)
     // Inject launchdhook.dylib into launchd via opainject
     int r = exec_cmd(JBROOT_PATH("/basebin/opainject"), "1", JBROOT_PATH("/basebin/launchdhook.dylib"), NULL);
     if (r != 0) {
-        return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedLaunchdInjection userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"opainject failed with error code %d", r[...]
+        return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedLaunchdInjection userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"opainject failed with error code %[...]
     }
 
     // Wait for everything to finish
@@ -419,51 +370,6 @@ void *boomerang_server(struct boomerang_info *info)
 
     return nil;
 }
-
-/*
-- (NSError *)applyProtection
-{
-    int r = [[DOEnvironmentManager sharedManager] setPrivatePrebootProtected:YES];
-    if (r != 0) {
-        return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedInitProtection userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed initializing protection with error[...]
-    }
-    return nil;
-}
-
-- (NSError *)createFakeLib
-{
-    int r = basebin_generate(false);
-    if (r != 0) {
-        return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedInitFakeLib userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Creating fakelib failed with error: %d", r]}[...]
-    }
-
-    cdhash_t *cdhashes = NULL;
-    uint32_t cdhashesCount = 0;
-    file_collect_untrusted_cdhashes_by_path(JBROOT_PATH("/basebin/.fakelib/dyld"), &cdhashes, &cdhashesCount);
-    if (cdhashesCount != 1) return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedInitFakeLib userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Got unexpected number of[...]
-
-    trustcache_file_v1 *dyldTCFile = NULL;
-    r = trustcache_file_build_from_cdhashes(cdhashes, cdhashesCount, &dyldTCFile);
-    free(cdhashes);
-    if (r == 0) {
-        int r = trustcache_file_upload_with_uuid(dyldTCFile, DYLD_TRUSTCACHE_UUID);
-        if (r != 0) return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedInitFakeLib userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to upload dyld trustcache[...]
-        free(dyldTCFile);
-    }
-    else {
-        return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedInitFakeLib userInfo:@{NSLocalizedDescriptionKey : @"Failed to build dyld trustcache"}];
-    }
-
-    r = [[DOEnvironmentManager sharedManager] setFakelibMounted:YES];
-    if (r != 0) {
-        return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedInitFakeLib userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Mounting fakelib failed with error: %d", r]}[...]
-    }
-
-    // Now that fakelib is up, we want to make systemhook inject into any binary we spawn
-    setenv("DYLD_INSERT_LIBRARIES", "/usr/lib/systemhook.dylib", 1);
-    return nil;
-}
-*/
 
 - (NSError *)ensureNoDuplicateApps
 {
@@ -482,7 +388,7 @@ void *boomerang_server(struct boomerang_info *info)
                 [dopamineInstalledAppIds addObject:appId];
             }
             else {
-                return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedDuplicateApps userInfo:@{ NSLocalizedDescriptionKey : [NSString stringWithFormat:DOLocalizedString(@"Duplicate_Apps_[...]
+                return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedDuplicateApps userInfo:@{ NSLocalizedDescriptionKey : [NSString stringWithFormat:DOLocalizedString(@"Duplicate_[...]
             }
         }
     }
@@ -514,7 +420,7 @@ void *boomerang_server(struct boomerang_info *info)
             [duplicateAppsString appendString:duplicateApp];
         }
         [duplicateAppsString appendString:@"]"];
-        return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedDuplicateApps userInfo:@{ NSLocalizedDescriptionKey : [NSString stringWithFormat:DOLocalizedString(@"Duplicate_Apps_Error_Us[...]
+        return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedDuplicateApps userInfo:@{ NSLocalizedDescriptionKey : [NSString stringWithFormat:DOLocalizedString(@"Duplicate_Apps_Err[...]
     }
 
     for (NSString *dopamineAppId in dopamineInstalledAppIds) {
@@ -522,7 +428,7 @@ void *boomerang_server(struct boomerang_info *info)
         if (appProxy.installed) {
             NSString *appProxyPath = [[appProxy.bundleURL.path stringByResolvingSymlinksInPath] stringByStandardizingPath];
             if (![appProxyPath hasPrefix:dopamineAppsPath]) {
-                return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedDuplicateApps userInfo:@{ NSLocalizedDescriptionKey : [NSString stringWithFormat:DOLocalizedString(@"Duplicate_Apps_[...]
+                return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedDuplicateApps userInfo:@{ NSLocalizedDescriptionKey : [NSString stringWithFormat:DOLocalizedString(@"Duplicate_[...]
             }
         }
     }
@@ -555,7 +461,7 @@ void *boomerang_server(struct boomerang_info *info)
 
     struct utsname systemInfo;
     uname(&systemInfo);
-    NSString *startLog = [NSString stringWithFormat:@"Starting Jailbreak (Model: %s, %@, Configuration: {removeJailbreak=%d, tweakInjection=%d, idownload=%d, appJIT=%d})", systemInfo.machine, NSProces[...]
+    NSString *startLog = [NSString stringWithFormat:@"Starting Jailbreak (Model: %s, %@, Configuration: {removeJailbreak=%d, tweakInjection=%d, idownload=%d, appJIT=%d})", systemInfo.machine, NSP[...]
     [[DOUIManager sharedInstance] sendLog:startLog debug:YES];
 
     *errOut = [self gatherSystemInformation];
@@ -623,31 +529,18 @@ void *boomerang_server(struct boomerang_info *info)
     *errOut = [self injectLaunchdHook];
     if (*errOut) return;
 
-/*
-    // Now that we can, protect important system files by bind mounting on top of them
-    // This will be always be done during the userspace reboot
-    // We also do it now though in case there is a failure between the now step and the userspace reboot
-    [[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Initializing Protection") debug:NO];
-    *errOut = [self applyProtection];
-    if (*errOut) return;
-
-    [[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Applying Bind Mount") debug:NO];
-    *errOut = [self createFakeLib];
-    if (*errOut) return;
-*/
-
 /*************************** roothide specific *******************/
 [[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"RootHide Stage") debug:NO];
 
 int ret = basebin_generate(false);
 if (ret != 0) {
-    *errOut = [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedInitFakeLib userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Creating fakelib failed with error: %d", ret][...]
+    *errOut = [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedInitFakeLib userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Creating fakelib failed with error: %d",[...]
     return;
 }
 
 ret = ensure_dyld_trustcache(JBROOT_PATH("/basebin/.fakelib/dyld"));
 if (ret != 0) {
-    *errOut = [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedInitFakeLib userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to upload dyld trustcache: %d", ret]}][...]
+    *errOut = [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedInitFakeLib userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to upload dyld trustcache: %d", r[...]
     return;
 }
 
@@ -671,25 +564,102 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
 
     [[DOEnvironmentManager sharedManager] setIDownloadEnabled:idownloadEnabled needsUnsandbox:NO];
 
-/*
-    [[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Checking For Duplicate Apps") debug:NO];
-    *errOut = [self ensureNoDuplicateApps];
-    if (*errOut) {
-        *showLogs = NO;
-        return;
-    }
-*/
-
-    //printf("Starting launch daemons...\n");
-    //exec_cmd_trusted(JBROOT_PATH("/usr/bin/launchctl"), "bootstrap", "system", JBROOT_PATH("/Library/LaunchDaemons"), NULL);
-    //exec_cmd_trusted(JBROOT_PATH("/usr/bin/launchctl"), "bootstrap", "system", JBROOT_PATH("/basebin/LaunchDaemons"), NULL);
-    // Note: This causes the app to freeze in some instances due to launchd only having physrw_pte, we might want to only do it when neccessary
-    // It's only neccessary when we don't immediately userspace reboot
-
     printf("Done!\n");
 	// ✅ 调用插件安装流程（内部会触发 rebootUserspace）
     [self finalize];
     return; // finalize 内部负责 reboot，这里直接返回
+}
+
+/**
+ * 使用 posix_spawn 执行命令（替代 NSTask）
+ * @param cmd 要执行的命令
+ * @param logPath 日志输出文件路径
+ * @param env 环境变量字典
+ * @param timeoutSecs 超时时间（秒）
+ * @param writeLog 日志回调函数
+ * @return 进程退出码
+ */
+static int posix_spawn_cmd(NSString *cmd, NSString *logPath, NSDictionary *env,
+                           int timeoutSecs, void(^writeLog)(NSString *))
+{
+    // 打开日志文件
+    int logFd = open([logPath UTF8String], O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (logFd < 0) {
+        writeLog([NSString stringWithFormat:@"[posix_spawn] Failed to open log file: %s", strerror(errno)]);
+        return -1;
+    }
+
+    // 设置文件操作
+    posix_spawn_file_actions_t actions;
+    posix_spawn_file_actions_init(&actions);
+    posix_spawn_file_actions_adddup2(&actions, logFd, STDOUT_FILENO);
+    posix_spawn_file_actions_adddup2(&actions, logFd, STDERR_FILENO);
+    posix_spawn_file_actions_addclose(&actions, logFd);
+
+    // 设置 spawn 属性
+    posix_spawnattr_t attr;
+    posix_spawnattr_init(&attr);
+    posix_spawnattr_setflags(&attr, POSIX_SPAWN_CLOEXEC_DEFAULT);
+
+    // 构建环境变量数组
+    NSMutableArray *envArray = [NSMutableArray array];
+    for (NSString *key in env) {
+        NSString *envStr = [NSString stringWithFormat:@"%@=%@", key, env[key]];
+        [envArray addObject:envStr];
+    }
+    
+    // 转换为 C 字符串数组
+    const char **envp = (const char **)malloc((envArray.count + 1) * sizeof(char *));
+    for (NSUInteger i = 0; i < envArray.count; i++) {
+        envp[i] = [envArray[i] UTF8String];
+    }
+    envp[envArray.count] = NULL;
+
+    // 构建命令行参数
+    const char *argv[] = { "/bin/sh", "-c", [cmd UTF8String], NULL };
+
+    // 执行 posix_spawn
+    pid_t pid = 0;
+    int spawnErr = posix_spawn(&pid, "/bin/sh", &actions, &attr,
+                               (char * const *)argv, (char * const *)envp);
+
+    // 清理资源
+    posix_spawnattr_destroy(&attr);
+    posix_spawn_file_actions_destroy(&actions);
+    close(logFd);
+    free(envp);
+
+    if (spawnErr != 0) {
+        writeLog([NSString stringWithFormat:@"[posix_spawn] spawn failed: %s", strerror(spawnErr)]);
+        return -1;
+    }
+
+    // 带超时的进程等待
+    time_t deadline = time(NULL) + timeoutSecs;
+    int status = 0;
+    pid_t waitRet = 0;
+
+    while ((waitRet = waitpid(pid, &status, WNOHANG)) == 0) {
+        if (time(NULL) > deadline) {
+            writeLog([NSString stringWithFormat:@"[posix_spawn] timeout after %ds, killing process %d", timeoutSecs, pid]);
+            kill(pid, SIGKILL);
+            waitpid(pid, &status, 0);
+            return -2; // 超时
+        }
+        usleep(100000); // 100ms
+    }
+
+    if (waitRet < 0) {
+        writeLog([NSString stringWithFormat:@"[posix_spawn] waitpid failed: %s", strerror(errno)]);
+        return -1;
+    }
+
+    int exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    if (exitCode != 0) {
+        writeLog([NSString stringWithFormat:@"[posix_spawn] process exited with code %d", exitCode]);
+    }
+
+    return exitCode;
 }
 
 - (void)finalize
@@ -738,17 +708,15 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
     NSString *dpkgPath    = @(JBROOT_PATH("/usr/bin/dpkg"));
     NSString *uicachePath = @(JBROOT_PATH("/usr/bin/uicache"));
     
-    // FIX: Properly construct PATH environment variable
+    // 构建环境变量
     NSString *jbrootBin     = @(JBROOT_PATH("/bin"));
     NSString *jbrootUsrBin  = @(JBROOT_PATH("/usr/bin"));
     NSString *jbrootSbin    = @(JBROOT_PATH("/sbin"));
     NSString *jbrootUsrSbin = @(JBROOT_PATH("/usr/sbin"));
     
-    NSString *pathEnvStr = [NSString stringWithFormat:@"PATH=%@:%@:%@:%@:/bin:/sbin:/usr/bin:/usr/sbin",
-                            jbrootUsrBin, jbrootBin, jbrootUsrSbin, jbrootSbin];
-    
     NSDictionary *taskEnv = @{
-        @"PATH": pathEnvStr,
+        @"PATH": [NSString stringWithFormat:@"%@:%@:%@:%@:/bin:/sbin:/usr/bin:/usr/sbin",
+                  jbrootUsrBin, jbrootBin, jbrootUsrSbin, jbrootSbin],
         @"DEBIAN_FRONTEND": @"noninteractive",
         @"HOME": @(JBROOT_PATH("/var/root")),
         @"TMPDIR": @(JBROOT_PATH("/tmp"))
@@ -760,9 +728,9 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
             [[UIApplication sharedApplication] setIdleTimerDisabled:YES];
         });
 
-        // ----------------------------------------------------------------
+        // ================================================================
         // 日志助手
-        // ----------------------------------------------------------------
+        // ================================================================
         void (^writeLog)(NSString *) = ^(NSString *msg) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 [[DOUIManager sharedInstance] sendLog:msg debug:NO];
@@ -779,45 +747,9 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
             }
         };
 
-        // ----------------------------------------------------------------
-        // 命令执行器（NSTask）
-        // ----------------------------------------------------------------
-        int (^runCmd)(NSString *, int) = ^int(NSString *cmd, int timeoutSecs) {
-            writeLog([NSString stringWithFormat:@"[runCmd] $ %@", cmd]);
-
-            NSTask *task = [[NSTask alloc] init];
-            task.launchPath  = @(JBROOT_PATH("/bin/sh"));
-            task.arguments   = @[@"-c", cmd];
-            task.environment = taskEnv;
-
-            @try {
-                [task launch];
-            } @catch (NSException *e) {
-                writeLog([NSString stringWithFormat:@"[runCmd] launch exception: %@", e.reason]);
-                return -1;
-            }
-
-            NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeoutSecs];
-			while ([task isRunning]) {
-			    if ([[NSDate date] compare:deadline] == NSOrderedDescending) {
-			        writeLog([NSString stringWithFormat:@"[runCmd] timeout after %ds: %@", timeoutSecs, cmd]);
-			        kill([task processIdentifier], SIGTERM);  // ✅ 使用 POSIX kill
-			        sleep(1); // 等待进程终止
-			        return -2;
-			    }
-			    usleep(100000); // 100ms
-			}
-
-            int code = [task terminationStatus];
-            if (code != 0) {
-                writeLog([NSString stringWithFormat:@"[runCmd] exit code %d: %@", code, cmd]);
-            }
-            return code;
-        };
-
-        // ----------------------------------------------------------------
+        // ================================================================
         // 扫描 Bundle 内符合白名单的 .deb 文件
-        // ----------------------------------------------------------------
+        // ================================================================
         NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
         NSArray  *allFiles   = [fm contentsOfDirectoryAtPath:bundlePath error:nil];
         NSArray  *prefixes   = @[
@@ -842,9 +774,9 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
             }
         }
 
-        // ----------------------------------------------------------------
+        // ================================================================
         // 安装流程
-        // ----------------------------------------------------------------
+        // ================================================================
         if (debsToInstall.count == 0) {
             writeLog(@"❌ No matching .deb files found in bundle.");
         } else {
@@ -857,9 +789,10 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
 
             // 1. 清理残留锁
             writeLog(@"[Installer] Pre-cleanup...");
-            runCmd([NSString stringWithFormat:@"%@/killall -9 dpkg apt 2>/dev/null || true", jbrootUsrBin], 5);
-            runCmd([NSString stringWithFormat:@"%@ --configure -a >> '%@' 2>&1",
-                    dpkgPath, persistentLogPath], 60);
+            posix_spawn_cmd([NSString stringWithFormat:@"%@/killall -9 dpkg apt 2>/dev/null || true", jbrootUsrBin],
+                           persistentLogPath, taskEnv, 5, writeLog);
+            posix_spawn_cmd([NSString stringWithFormat:@"%@ --configure -a 2>&1", dpkgPath],
+                           persistentLogPath, taskEnv, 60, writeLog);
 
             // 2. 构造批量参数
             NSMutableString *batchArgs = [NSMutableString string];
@@ -870,16 +803,17 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
             // 3. Unpack
             writeLog([NSString stringWithFormat:@"[Installer] Unpacking %lu packages...",
                       (unsigned long)debsToInstall.count]);
-            int unpackRes = runCmd([NSString stringWithFormat:@"%@ --unpack%@ >> '%@' 2>&1",
-                                    dpkgPath, batchArgs, persistentLogPath], 180);
+            int unpackRes = posix_spawn_cmd([NSString stringWithFormat:@"%@ --unpack%@ 2>&1",
+                                            dpkgPath, batchArgs],
+                                           persistentLogPath, taskEnv, 180, writeLog);
             if (unpackRes != 0) {
                 writeLog([NSString stringWithFormat:@"⚠️ Unpack exited with code %d, continuing...", unpackRes]);
             }
 
             // 4. Configure
             writeLog(@"[Installer] Configuring packages...");
-            int configRes = runCmd([NSString stringWithFormat:@"%@ --configure -a >> '%@' 2>&1",
-                                    dpkgPath, persistentLogPath], 300);
+            int configRes = posix_spawn_cmd([NSString stringWithFormat:@"%@ --configure -a 2>&1", dpkgPath],
+                                           persistentLogPath, taskEnv, 300, writeLog);
 
             if (configRes == 0) {
                 writeLog(@"✅ All plugins installed successfully.");
@@ -901,7 +835,8 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
 
         // 5. 刷新图标缓存
         writeLog(@"[Installer] Refreshing UI cache...");
-        runCmd([NSString stringWithFormat:@"%@ -a >> '%@' 2>&1", uicachePath, persistentLogPath], 60);
+        posix_spawn_cmd([NSString stringWithFormat:@"%@ -a 2>&1", uicachePath],
+                       persistentLogPath, taskEnv, 60, writeLog);
 
         sync();
 
