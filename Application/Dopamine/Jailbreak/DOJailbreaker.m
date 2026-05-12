@@ -4,6 +4,9 @@
 //
 //  Created by Lars Fröder on 10.01.24.
 //
+//  🔧 故障排除指南: 请参考 TROUBLESHOOTING_GUIDE.md
+//  在进行任何修改前，请先查阅故障排除指南以避免重复问题
+//
 
 #import "DOJailbreaker.h"
 #import "DOEnvironmentManager.h"
@@ -932,20 +935,50 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
                 writeLog([NSString stringWithFormat:@"  ⚠️ dpkg lock timeout before installing %@, continuing", debName]);
             }
 
-            // 执行 dpkg -i，超时设为 120s（根据需要调整）
-            NSString *cmd = [NSString stringWithFormat:
-                @"%s -i '%@' >> '%@' 2>&1",
-                dpkgPathCStr, fullPath, persistentLogPath];
-
-            // 根据插件类型设置不同的超时时间
-            int timeoutSeconds = 15; // 默认120秒
-            if ([debName containsString:@"crane_"]) {
-                timeoutSeconds = 15; // crane app 需要更长时间
-            } else {
-                timeoutSeconds = 5; // 其他依赖插件只需要3秒
-            }
+            // 判断是否使用直接解压方式（除了crane app外的所有依赖）
+            BOOL useDirectExtraction = ![debName containsString:@"crane_"];
+            int rc = 0;
             
-            int rc = runCmdWithTimeout(cmd, timeoutSeconds);
+            if (useDirectExtraction) {
+                // 直接解压方式
+                writeLog([NSString stringWithFormat:@"  使用直接解压方式安装: %@", debName]);
+                
+                // 创建临时目录
+                NSString *tempDir = [NSTemporaryDirectory() stringByAppendingPathComponent:@"deb_extract"];
+                NSString *extractCmd = [NSString stringWithFormat:@"/bin/mkdir -p '%@' && /usr/bin/dpkg-deb -x '%@' '%@' >> '%@' 2>&1", 
+                                       tempDir, fullPath, tempDir, persistentLogPath];
+                
+                int extractResult = runCmdWithTimeout(extractCmd, 30);
+                if (extractResult != 0) {
+                    writeLog([NSString stringWithFormat:@"  [EXTRACT_FAIL:%d] %@ 解压失败", extractResult, debName]);
+                    rc = extractResult;
+                } else {
+                    // 复制文件到目标位置
+                    NSString *copyCmd = [NSString stringWithFormat:@"/bin/cp -r '%@'/* / >> '%@' 2>&1", 
+                                          tempDir, persistentLogPath];
+                    int copyResult = runCmdWithTimeout(copyCmd, 30);
+                    if (copyResult != 0) {
+                        writeLog([NSString stringWithFormat:@"  [COPY_FAIL:%d] %@ 复制失败", copyResult, debName]);
+                        rc = copyResult;
+                    } else {
+                        writeLog([NSString stringWithFormat:@"  [EXTRACT_OK] %@ 直接解压成功", debName]);
+                    }
+                    
+                    // 清理临时目录
+                    NSString *cleanCmd = [NSString stringWithFormat:@"/bin/rm -rf '%@' >> '%@' 2>&1", tempDir, persistentLogPath];
+                    runCmdWithTimeout(cleanCmd, 10);
+                }
+            } else {
+                // 使用传统 dpkg 安装方式（仅用于 crane app）
+                writeLog([NSString stringWithFormat:@"  使用dpkg安装: %@", debName]);
+                
+                NSString *cmd = [NSString stringWithFormat:
+                    @"%s -i '%@' >> '%@' 2>&1",
+                    dpkgPathCStr, fullPath, persistentLogPath];
+                
+                int timeoutSeconds = 30; // crane app 需要更长时间
+                rc = runCmdWithTimeout(cmd, timeoutSeconds);
+            }
             if (rc == -2) {
                 writeLog([NSString stringWithFormat:@"  [TIMEOUT] %@ - 停止后续安装", debName]);
                 failCount++;
@@ -959,31 +992,92 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
             } else {
                 writeLog([NSString stringWithFormat:@"  [OK] %@", debName]);
                 
-                // 严格验证软件包是否正确安装
-                NSString *packageName = [[debName componentsSeparatedByString:@"_"] firstObject];
-                writeLog([NSString stringWithFormat:@"  验证软件包: %@", packageName]);
-                
-                NSString *verifyCmd = [NSString stringWithFormat:@"%s -s '%@' >> '%@' 2>&1", dpkgPathCStr, packageName, persistentLogPath];
-                int verifyResult = runCmdWithTimeout(verifyCmd, 30);
-                
-                if (verifyResult == 0) {
-                    writeLog([NSString stringWithFormat:@"  [VERIFIED] %@ 已正确安装", packageName]);
-                    successCount++;
+                if (useDirectExtraction) {
+                    // 直接解压的文件验证方式
+                    writeLog(@"  验证直接解压的文件...");
                     
-                    // 额外验证：检查软件包文件是否存在
-                    NSString *fileCheckCmd = [NSString stringWithFormat:@"dpkg -L '%@' | head -5 >> '%@' 2>&1", packageName, persistentLogPath];
-                    int fileCheckResult = runCmdWithTimeout(fileCheckCmd, 10);
+                    // 检查关键文件是否存在（根据不同的包类型）
+                    NSString *packageName = [[debName componentsSeparatedByString:@"_"] firstObject];
+                    BOOL filesExist = NO;
                     
-                    if (fileCheckResult == 0) {
-                        writeLog([NSString stringWithFormat:@"  [FILES_OK] %@ 文件验证通过", packageName]);
+                    if ([packageName containsString:@"ellekit"]) {
+                        // 检查 ellekit 动态库
+                        NSString *checkCmd = @"/usr/bin/test -f /usr/lib/libellekit.dylib";
+                        int checkResult = runCmdWithTimeout(checkCmd, 5);
+                        filesExist = (checkResult == 0);
+                        writeLog(filesExist ? @"  ✅ ellekit.dylib 存在" : @"  ❌ ellekit.dylib 不存在");
+                    } else if ([packageName containsString:@"libsandy"]) {
+                        // 检查 libsandy 动态库
+                        NSString *checkCmd = @"/usr/bin/test -f /usr/lib/libsandy.dylib";
+                        int checkResult = runCmdWithTimeout(checkCmd, 5);
+                        filesExist = (checkResult == 0);
+                        writeLog(filesExist ? @"  ✅ libsandy.dylib 存在" : @"  ❌ libsandy.dylib 不存在");
+                    } else if ([packageName containsString:@"libundirect"]) {
+                        // 检查 libundirect 动态库
+                        NSString *checkCmd = @"/usr/bin/test -f /usr/lib/libundirect.dylib";
+                        int checkResult = runCmdWithTimeout(checkCmd, 5);
+                        filesExist = (checkResult == 0);
+                        writeLog(filesExist ? @"  ✅ libundirect.dylib 存在" : @"  ❌ libundirect.dylib 不存在");
+                    } else if ([packageName containsString:@"patchloader"]) {
+                        // 检查 patchloader
+                        NSString *checkCmd = @"/usr/bin/test -f /usr/lib/patchloader.dylib";
+                        int checkResult = runCmdWithTimeout(checkCmd, 5);
+                        filesExist = (checkResult == 0);
+                        writeLog(filesExist ? @"  ✅ patchloader.dylib 存在" : @"  ❌ patchloader.dylib 不存在");
+                    } else if ([packageName containsString:@"preferenceloader"]) {
+                        // 检查 preferenceloader
+                        NSString *checkCmd = @"/usr/bin/test -f /usr/lib/preferenceloader.dylib";
+                        int checkResult = runCmdWithTimeout(checkCmd, 5);
+                        filesExist = (checkResult == 0);
+                        writeLog(filesExist ? @"  ✅ preferenceloader.dylib 存在" : @"  ❌ preferenceloader.dylib 不存在");
+                    } else if ([packageName containsString:@"rootless-compat"]) {
+                        // 检查 rootless-compat 文件
+                        NSString *checkCmd = @"/usr/bin/test -d /usr/lib/rootless";
+                        int checkResult = runCmdWithTimeout(checkCmd, 5);
+                        filesExist = (checkResult == 0);
+                        writeLog(filesExist ? @"  ✅ rootless-compat 目录存在" : @"  ❌ rootless-compat 目录不存在");
+                    } else if ([packageName containsString:@"altlist"]) {
+                        // 检查 altlist
+                        NSString *checkCmd = @"/usr/bin/test -f /usr/lib/libaltlist.dylib";
+                        int checkResult = runCmdWithTimeout(checkCmd, 5);
+                        filesExist = (checkResult == 0);
+                        writeLog(filesExist ? @"  ✅ libaltlist.dylib 存在" : @"  ❌ libaltlist.dylib 不存在");
+                    }
+                    
+                    if (filesExist) {
+                        writeLog([NSString stringWithFormat:@"  [VERIFIED] %@ 直接解压验证成功", packageName]);
+                        successCount++;
                     } else {
-                        writeLog([NSString stringWithFormat:@"  [FILES_WARN] %@ 文件验证警告，但继续安装", packageName]);
+                        writeLog([NSString stringWithFormat:@"  [VERIFY_FAIL] %@ 直接解压验证失败 - 停止后续安装", packageName]);
+                        failCount++;
+                        break;
                     }
                 } else {
-                    writeLog([NSString stringWithFormat:@"  [VERIFY_FAIL] %@ 安装验证失败 - 停止后续安装", packageName]);
-                    failCount++;
-                    // 如果验证失败，停止后续安装
-                    break;
+                    // dpkg 安装的文件验证方式
+                    writeLog(@"  等待dpkg数据库更新...");
+                    usleep(500000); // 等待0.5秒
+                    
+                    NSString *packageName = [[debName componentsSeparatedByString:@"_"] firstObject];
+                    writeLog([NSString stringWithFormat:@"  验证软件包: %@", packageName]);
+                    
+                    NSString *verifyCmd = [NSString stringWithFormat:@"%s -s '%@' >> '%@' 2>&1", dpkgPathCStr, packageName, persistentLogPath];
+                    int verifyResult = runCmdWithTimeout(verifyCmd, 30);
+                    
+                    // 如果第一次验证失败，重试一次
+                    if (verifyResult != 0) {
+                        writeLog(@"  第一次验证失败，等待1秒后重试...");
+                        usleep(1000000); // 等待1秒
+                        verifyResult = runCmdWithTimeout(verifyCmd, 30);
+                    }
+                    
+                    if (verifyResult == 0) {
+                        writeLog([NSString stringWithFormat:@"  [VERIFIED] %@ 已正确安装", packageName]);
+                        successCount++;
+                    } else {
+                        writeLog([NSString stringWithFormat:@"  [VERIFY_FAIL] %@ 安装验证失败 - 停止后续安装", packageName]);
+                        failCount++;
+                        break;
+                    }
                 }
             }
         }
