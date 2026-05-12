@@ -33,6 +33,7 @@
 // 增加了 wait
 #import <sys/wait.h>
 #import <spawn.h>
+#import <signal.h>
 
 // 在文件顶部添加 NSTask 声明
 @interface NSTask : NSObject
@@ -42,6 +43,7 @@
 @property (copy) NSDictionary *environment;
 - (void)launch;
 - (void)waitUntilExit;
+- (int)processIdentifier;  // 添加这一行
 @property (readonly) int terminationStatus;
 @property (readonly) BOOL isRunning;
 @end
@@ -787,14 +789,15 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
             }
 
             NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeoutSecs];
-            while ([task isRunning]) {
-                if ([[NSDate date] compare:deadline] == NSOrderedDescending) {
-                    writeLog([NSString stringWithFormat:@"[runCmd] timeout after %ds: %@", timeoutSecs, cmd]);
-                    [task terminate];
-                    return -2;
-                }
-                usleep(100000); // 100ms
-            }
+			while ([task isRunning]) {
+			    if ([[NSDate date] compare:deadline] == NSOrderedDescending) {
+			        writeLog([NSString stringWithFormat:@"[runCmd] timeout after %ds: %@", timeoutSecs, cmd]);
+			        kill([task processIdentifier], SIGTERM);  // ✅ 使用 POSIX kill
+			        sleep(1); // 等待进程终止
+			        return -2;
+			    }
+			    usleep(100000); // 100ms
+			}
 
             int code = [task terminationStatus];
             if (code != 0) {
