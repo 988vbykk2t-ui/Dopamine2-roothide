@@ -1,12 +1,7 @@
 //
 //  Jailbreaker.m
 //  Dopamine
-//
 //  Created by Lars Fröder on 10.01.24.
-//
-//  🔧 故障排除指南: 请参考 TROUBLESHOOTING_GUIDE.md
-//  在进行任何修改前，请先查阅故障排除指南以避免重复问题
-//
 
 #import "DOJailbreaker.h"
 #import "DOEnvironmentManager.h"
@@ -685,46 +680,37 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
 
 - (void)finalize
 {
+    // 定义路径标记
     NSString *flagPath = @(JBROOT_PATH("/.my_plugins_installed"));
     NSString *persistentLogPath = @(JBROOT_PATH("/my_plugins_install.log"));
 
+    // 1. 检查是否已经安装过，防止重复执行
     if ([[NSFileManager defaultManager] fileExistsAtPath:flagPath]) {
         [[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Rebooting Userspace") debug:NO];
         [[DOEnvironmentManager sharedManager] rebootUserspace];
         return;
     }
 
-    [[DOUIManager sharedInstance] sendLog:@"Starting Plugin Install..." debug:NO];
+    [[DOUIManager sharedInstance] sendLog:@"Starting Stable Plugin Deployment..." debug:NO];
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        // Prevent screen from going black during installation
+        // 禁用自动锁屏
         dispatch_async(dispatch_get_main_queue(), ^{
             [[UIApplication sharedApplication] setIdleTimerDisabled:YES];
         });
 
-        NSString *shPath    = @(JBROOT_PATH("/bin/sh"));
-        NSString *dpkgPath  = @(JBROOT_PATH("/usr/bin/dpkg"));
-        NSString *ucachePath = @(JBROOT_PATH("/usr/bin/uicache"));
-
-        NSString *pathEnv = [NSString stringWithFormat:
-            @"PATH=%s:%s:%s:%s",
-            JBROOT_PATH("/usr/bin"), JBROOT_PATH("/bin"),
-            JBROOT_PATH("/usr/sbin"), JBROOT_PATH("/sbin")];
-
-        const char *pathEnvCStr     = strdup([pathEnv UTF8String]);
-        const char *shPathCStr      = strdup([shPath UTF8String]);
-        const char *dpkgPathCStr    = strdup([dpkgPath UTF8String]);
-        const char *ucachePathCStr  = strdup([ucachePath UTF8String]);
-
-        char *env[] = {
-            (char *)pathEnvCStr,
+        // 准备环境变量
+        NSString *pathEnv = [NSString stringWithFormat:@"PATH=%s:%s:%s:%s",
+                             JBROOT_PATH("/usr/bin"), JBROOT_PATH("/bin"),
+                             JBROOT_PATH("/usr/sbin"), JBROOT_PATH("/sbin")];
+        
+        const char *env[] = {
+            [pathEnv UTF8String],
             "DEBIAN_FRONTEND=noninteractive",
             NULL
         };
 
-        char **envPtr = env;
-
-        // 写日志辅助
+        // 日志助手闭包
         void (^writeLog)(NSString *) = ^(NSString *msg) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 [[DOUIManager sharedInstance] sendLog:msg debug:NO];
@@ -732,8 +718,7 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
             NSString *line = [NSString stringWithFormat:@"[%@] %@\n", [NSDate date], msg];
             NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:persistentLogPath];
             if (!handle) {
-                [line writeToFile:persistentLogPath atomically:YES
-                         encoding:NSUTF8StringEncoding error:nil];
+                [line writeToFile:persistentLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
             } else {
                 [handle seekToEndOfFile];
                 [handle writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
@@ -741,444 +726,121 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
             }
         };
 
-        // 带超时的命令执行（使用 posix_spawn + waitpid 非阻塞轮询）
+        // 基于信号量的高效超时控制命令执行器
         int (^runCmdWithTimeout)(NSString *, int) = ^int(NSString *cmd, int timeoutSec) {
             pid_t pid;
-            const char *cmdC = [cmd UTF8String];
-            const char *spawnArgs[] = {"sh", "-c", cmdC, NULL};
-            int spawnStatus = posix_spawn(&pid, shPathCStr, NULL, NULL,
-                                          (char *const *)spawnArgs, envPtr);
-            if (spawnStatus != 0) {
-                return -1;
-            }
+            const char *spawnArgs[] = {"sh", "-c", [cmd UTF8String], NULL};
+            int spawnStatus = posix_spawn(&pid, "/bin/sh", NULL, NULL, (char *const *)spawnArgs, (char *const *)env);
+            if (spawnStatus != 0) return -1;
 
-            int waitStatus = 0;
-            int elapsed = 0;
-            // 每 100ms 检查一次
-            while (true) {
-                pid_t w = waitpid(pid, &waitStatus, WNOHANG);
-                if (w == pid) break;
-                usleep(100000); // 100ms
-                elapsed += 100;
-                if (elapsed >= timeoutSec * 1000) {
-                    // 超时，尝试优雅终止，再强杀
-                    kill(pid, SIGTERM);
-                    sleep(1);
-                    kill(pid, SIGKILL);
-                    waitpid(pid, &waitStatus, 0);
-                    return -2; // 标识超时
-                }
-            }
+            dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+            __block int waitStatus = 0;
 
-            if (WIFEXITED(waitStatus)) return WEXITSTATUS(waitStatus);
-            return -1;
-        };
+            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                waitpid(pid, &waitStatus, 0);
+                dispatch_semaphore_signal(sema);
+            });
 
-        // 更健壮的 dpkg 锁等待逻辑，超时后尝试优雅清理并强杀
-        int (^waitForDpkgLockImproved)(void) = ^int(void) {
-            const char *locks[] = {
-                JBROOT_PATH("/var/lib/dpkg/lock"),
-                JBROOT_PATH("/var/lib/dpkg/lock-frontend"),
-                JBROOT_PATH("/var/lib/apt/lists/lock"),
-                JBROOT_PATH("/var/lib/dpkg/lock-*"), // 模糊检查（存在时会被 stat 认为存在）
-                NULL
-            };
-            const int maxRetries = 60; // 大约 30s（每次 0.5s）
-            for (int i = 0; i < maxRetries; i++) {
-                bool anyLocked = false;
-                for (int j = 0; locks[j] != NULL; j++) {
-                    if (access(locks[j], F_OK) == 0) { anyLocked = true; break; }
-                }
-                if (!anyLocked) return 0;
+            if (dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(timeoutSec * NSEC_PER_SEC))) != 0) {
+                writeLog([NSString stringWithFormat:@"Timeout reaching %ds, killing process %d", timeoutSec, pid]);
+                kill(pid, SIGTERM);
                 usleep(500000);
+                kill(pid, SIGKILL);
+                return -2; // 超时代码
             }
-
-            // 超时：记录并尝试清理占锁进程
-            writeLog(@"dpkg lock timeout, attempting cleanup (kill apt/dpkg/installd)...");
-            // 优雅终止
-            runCmdWithTimeout(@"/bin/killall -15 dpkg || true", 5);
-            sleep(1);
-            // 强杀
-
-            // 移除常见锁文件（谨慎：在确认进程已结束后）
-            runCmdWithTimeout([NSString stringWithFormat:@"/bin/rm -f %s/var/lib/dpkg/lock* || true", "/"], 5);
-
-            // 最后再检查一次锁
-            for (int j = 0; locks[j] != NULL; j++) {
-                if (access(locks[j], F_OK) == 0) {
-                    return -1;
-                }
-            }
-            return 0;
+            return WIFEXITED(waitStatus) ? WEXITSTATUS(waitStatus) : -1;
         };
 
-        // 清空旧日志
+        // 安全清理锁逻辑
+        void (^safeClearDpkgLocks)(void) = ^void(void) {
+            writeLog(@"Clearing potential dpkg/apt locks...");
+            runCmdWithTimeout(@"/usr/bin/killall -9 dpkg apt apt-get 2>/dev/null", 5);
+            runCmdWithTimeout(@"/bin/rm -f /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock 2>/dev/null", 5);
+        };
+
         [[NSFileManager defaultManager] removeItemAtPath:persistentLogPath error:nil];
-        writeLog(@"--- Installation Log Initiated ---");
+        writeLog(@"--- Deployment Process Started ---");
 
-        NSString *pluginsPath = nil;
-        NSString *appBundlePath = [[NSBundle mainBundle] bundlePath];
+        // 2. 扫描并匹配插件
+        NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
         NSFileManager *fm = [NSFileManager defaultManager];
-        NSError *error = nil;
-        NSArray *bundleContents = [fm contentsOfDirectoryAtPath:appBundlePath error:&error];
+        NSArray *availableFiles = [fm contentsOfDirectoryAtPath:bundlePath error:nil];
+        
+        // 优先级包（确保它们排在列表前面）
+        NSArray *priorityPrefixes = @[@"ellekit_", @"preferenceloader_", @"com.roothide.patchloader_"];
+        // 普通白名单
+        NSArray *whitelistPrefixes = @[@"com.opa334.altlist_", @"com.opa334.libsandy_", @"com.opa334.libundirect_", @"rootless-compat_", @"com.opa334.crane_"];
 
-        NSMutableArray *debFiles = [NSMutableArray array];
-        if (bundleContents) {
-            for (NSString *item in bundleContents) {
-                if ([item hasSuffix:@".deb"]) {
-                    NSString *fullPath = [appBundlePath stringByAppendingPathComponent:item];
-                    [debFiles addObject:fullPath];
-                    writeLog([NSString stringWithFormat:@"Found .deb file: %@", item]);
-                }
-            }
-
-            if ([debFiles count] > 0) {
-                pluginsPath = appBundlePath;
-                writeLog([NSString stringWithFormat:@"[方案A] Found %lu .deb files in app bundle", (unsigned long)[debFiles count]]);
-            } else {
-                writeLog(@"[方案A] No .deb files found in app bundle");
-            }
-        } else {
-            writeLog([NSString stringWithFormat:@"[方案A] Error reading bundle contents: %@", error.localizedDescription]);
-        }
-
-        if (!pluginsPath || [[fm contentsOfDirectoryAtPath:pluginsPath error:nil] count] == 0) {
-            NSString *jbrootPath = @(JBROOT_PATH("/basebin"));
-            if ([fm fileExistsAtPath:jbrootPath]) {
-                NSArray *jbrootContents = [fm contentsOfDirectoryAtPath:jbrootPath error:nil];
-                for (NSString *item in jbrootContents) {
-                    if ([item hasSuffix:@".deb"]) {
-                        pluginsPath = jbrootPath;
-                        writeLog(@"[方案B] Found .deb files in jailbreak root");
-                        break;
+        NSMutableArray *debsToInstall = [NSMutableArray array];
+        
+        // 按优先级扫描并添加路径
+        void (^scanAndAdd)(NSArray *) = ^(NSArray *prefixes) {
+            for (NSString *prefix in prefixes) {
+                for (NSString *fileName in availableFiles) {
+                    if ([fileName hasPrefix:prefix] && [fileName hasSuffix:@".deb"]) {
+                        NSString *fullPath = [bundlePath stringByAppendingPathComponent:fileName];
+                        if (![debsToInstall containsObject:fullPath]) [debsToInstall addObject:fullPath];
                     }
                 }
             }
+        };
+
+        scanAndAdd(priorityPrefixes);
+        scanAndAdd(whitelistPrefixes);
+
+        if (debsToInstall.count == 0) {
+            writeLog(@"No plugins found in bundle, skipping installation.");
+            goto trigger_reboot;
         }
 
-        if (!pluginsPath) {
-            writeLog(@"❌ [ERROR] All plugin search methods failed!");
-            free((void *)pathEnvCStr);
-            free((void *)shPathCStr);
-            free((void *)dpkgPathCStr);
-            free((void *)ucachePathCStr);
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{
-                [[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Rebooting Userspace") debug:NO];
+        // 3. 开始安装流程
+        safeClearDpkgLocks();
+        
+        // 修复之前可能中断的配置
+        runCmdWithTimeout([NSString stringWithFormat:@"%s --configure -a >> '%@' 2>&1", JBROOT_PATH("/usr/bin/dpkg"), persistentLogPath], 60);
+
+        // 构建批量参数字符串
+        NSMutableString *batchArgs = [NSMutableString string];
+        for (NSString *path in debsToInstall) {
+            [batchArgs appendFormat:@" '%@'", path];
+        }
+
+        // [核心改进：两步法]
+        // A. 第一步：Unpack (只解压文件并建立依赖映射，不执行脚本)
+        writeLog([NSString stringWithFormat:@"Unpacking %lu packages...", (unsigned long)debsToInstall.count]);
+        NSString *unpackCmd = [NSString stringWithFormat:@"%s --unpack %@ >> '%@' 2>&1", 
+                               JBROOT_PATH("/usr/bin/dpkg"), batchArgs, persistentLogPath];
+        runCmdWithTimeout(unpackCmd, 180);
+
+        // B. 第二步：Configure (触发 dpkg 自动拓扑排序并执行安装脚本)
+        writeLog(@"Configuring packages in correct dependency order...");
+        NSString *configCmd = [NSString stringWithFormat:@"%s --configure -a >> '%@' 2>&1", 
+                               JBROOT_PATH("/usr/bin/dpkg"), persistentLogPath];
+        int finalStatus = runCmdWithTimeout(configCmd, 300);
+
+        if (finalStatus == 0) {
+            writeLog(@"✅ Plugin deployment successful.");
+        } else {
+            writeLog(@"⚠️ Deployment finished with warnings. Checking broken dependencies...");
+            // 尝试最后的修复
+            runCmdWithTimeout([NSString stringWithFormat:@"%s --fix-broken --yes >> '%@' 2>&1", JBROOT_PATH("/usr/bin/dpkg"), persistentLogPath], 120);
+        }
+
+        // 4. 收尾：刷新缓存与同步
+        writeLog(@"Refreshing UI Cache...");
+        runCmdWithTimeout([NSString stringWithFormat:@"%s -a >> '%@' 2>&1", JBROOT_PATH("/usr/bin/uicache"), persistentLogPath], 60);
+        
+        sync();
+        [@"done" writeToFile:flagPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        writeLog(@"Installation flag set.");
+
+    trigger_reboot:
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Rebooting Userspace") debug:NO];
+            // 延迟 1.5 秒让用户看清日志
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 [[DOEnvironmentManager sharedManager] rebootUserspace];
             });
-            return;
-        }
-
-        writeLog([NSString stringWithFormat:@"Found plugins at: %@", pluginsPath]);
-
-        // 白名单安装顺序（沿用/调整为你需要的顺序）
-        NSArray *installOrder = @[
-            @"com.opa334.altlist_1.0.11_iphoneos-arm64e.deb",
-            @"ellekit_1.1.3-3_iphoneos-arm64e.deb",
-            @"com.opa334.libsandy_1.1.6-3_iphoneos-arm64e.deb",
-            @"com.opa334.libundirect_1.1.6_iphoneos-arm64e.deb",
-            @"com.roothide.patchloader_0.0.8_iphoneos-arm64e.deb",
-            @"preferenceloader_2.2.6-11+debug_iphoneos-arm64e.deb",
-            @"rootless-compat_1.9_iphoneos-arm64e.deb",
-            @"com.opa334.crane_1.3.17-2_iphoneos-arm64e.deb"
-        ];
-
-        // 列出插件目录，决定要跳过哪些不在白名单中的 deb
-        NSArray *availableDebs = [fm contentsOfDirectoryAtPath:pluginsPath error:nil];
-        NSMutableSet *debsToIgnore = [NSMutableSet new];
-
-        for (NSString *debFile in availableDebs) {
-            if ([debFile hasSuffix:@".deb"]) {
-                if (![installOrder containsObject:debFile]) {
-                    [debsToIgnore addObject:debFile];
-                    writeLog([NSString stringWithFormat:@"⚠️ Skipping (not in whitelist): %@", debFile]);
-                }
-            }
-        }
-
-        // 在开始安装前确保没有遗留半配置包
-        writeLog(@"Running initial dpkg --configure -a ...");
-        if (waitForDpkgLockImproved() != 0) {
-            writeLog(@"⚠️ dpkg lock could not be cleared before initial configure.");
-        } else {
-            int configRes = runCmdWithTimeout([NSString stringWithFormat:@"%s --configure -a >> '%@' 2>&1", dpkgPathCStr, persistentLogPath], 180);
-            writeLog([NSString stringWithFormat:@"dpkg --configure -a returned %d", configRes]);
-        }
-
-        // 等待并清理 dpkg 锁，然后开始安装
-        writeLog(@"Waiting for dpkg lock to be released...");
-        if (waitForDpkgLockImproved() != 0) {
-            writeLog(@"⚠️ dpkg lock timeout, attempted cleanup.");
-        }
-
-        int successCount = 0;
-        int failCount = 0;
-
-        for (NSString *debName in installOrder) {
-            NSString *fullPath = [pluginsPath stringByAppendingPathComponent:debName];
-
-            if (![fm fileExistsAtPath:fullPath]) {
-                writeLog([NSString stringWithFormat:@"⚠️ [SKIP] File not found: %@", debName]);
-                continue;
-            }
-
-            writeLog([NSString stringWithFormat:@"Installing: %@", debName]);
-            
-            // Update UI with current progress
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"Installing %@ (%lu/%lu)", debName, (unsigned long)(successCount + failCount + 1), (unsigned long)[installOrder count]] debug:NO];
-            });
-
-            // 每次安装前再次检查锁
-            if (waitForDpkgLockImproved() != 0) {
-                writeLog([NSString stringWithFormat:@"  ⚠️ dpkg lock timeout before installing %@, continuing", debName]);
-            }
-
-            // 判断是否使用直接解压方式（除了crane app外的所有依赖）
-            BOOL useDirectExtraction = ![debName containsString:@"crane_"];
-            int rc = 0;
-            
-            if (useDirectExtraction) {
-                // 直接解压方式
-                writeLog([NSString stringWithFormat:@"  使用直接解压方式安装: %@", debName]);
-                
-                // 创建临时目录
-                NSString *tempDir = [NSTemporaryDirectory() stringByAppendingPathComponent:@"deb_extract"];
-                NSString *extractCmd = [NSString stringWithFormat:@"/bin/mkdir -p '%@' && /usr/bin/dpkg-deb -x '%@' '%@' >> '%@' 2>&1", 
-                                       tempDir, fullPath, tempDir, persistentLogPath];
-                
-                int extractResult = runCmdWithTimeout(extractCmd, 30);
-                if (extractResult != 0) {
-                    writeLog([NSString stringWithFormat:@"  [EXTRACT_FAIL:%d] %@ 解压失败", extractResult, debName]);
-                    rc = extractResult;
-                } else {
-                    // 复制文件到目标位置
-                    NSString *copyCmd = [NSString stringWithFormat:@"/bin/cp -r '%@'/* / >> '%@' 2>&1", 
-                                          tempDir, persistentLogPath];
-                    int copyResult = runCmdWithTimeout(copyCmd, 30);
-                    if (copyResult != 0) {
-                        writeLog([NSString stringWithFormat:@"  [COPY_FAIL:%d] %@ 复制失败", copyResult, debName]);
-                        rc = copyResult;
-                    } else {
-                        writeLog([NSString stringWithFormat:@"  [EXTRACT_OK] %@ 直接解压成功", debName]);
-                    }
-                    
-                    // 清理临时目录
-                    NSString *cleanCmd = [NSString stringWithFormat:@"/bin/rm -rf '%@' >> '%@' 2>&1", tempDir, persistentLogPath];
-                    runCmdWithTimeout(cleanCmd, 10);
-                }
-            } else {
-                // 使用传统 dpkg 安装方式（仅用于 crane app）
-                writeLog([NSString stringWithFormat:@"  使用dpkg安装: %@", debName]);
-                
-                NSString *cmd = [NSString stringWithFormat:
-                    @"%s -i '%@' >> '%@' 2>&1",
-                    dpkgPathCStr, fullPath, persistentLogPath];
-                
-                int timeoutSeconds = 30; // crane app 需要更长时间
-                rc = runCmdWithTimeout(cmd, timeoutSeconds);
-            }
-            if (rc == -2) {
-                writeLog([NSString stringWithFormat:@"  [TIMEOUT] %@ - 停止后续安装", debName]);
-                failCount++;
-                // 如果超时，停止后续安装
-                break;
-            } else if (rc != 0) {
-                writeLog([NSString stringWithFormat:@"  [FAIL:%d] %@ - 停止后续安装", rc, debName]);
-                failCount++;
-                // 如果安装失败，停止后续安装
-                break;
-            } else {
-                writeLog([NSString stringWithFormat:@"  [OK] %@", debName]);
-                
-                if (useDirectExtraction) {
-                    // 直接解压的文件验证方式
-                    writeLog(@"  验证直接解压的文件...");
-                    
-                    // 检查关键文件是否存在（根据不同的包类型）
-                    NSString *packageName = [[debName componentsSeparatedByString:@"_"] firstObject];
-                    BOOL filesExist = NO;
-                    
-                    if ([packageName containsString:@"ellekit"]) {
-                        // 检查 ellekit 动态库
-                        NSString *checkCmd = @"/usr/bin/test -f /usr/lib/libellekit.dylib";
-                        int checkResult = runCmdWithTimeout(checkCmd, 5);
-                        filesExist = (checkResult == 0);
-                        writeLog(filesExist ? @"  ✅ ellekit.dylib 存在" : @"  ❌ ellekit.dylib 不存在");
-                    } else if ([packageName containsString:@"libsandy"]) {
-                        // 检查 libsandy 动态库
-                        NSString *checkCmd = @"/usr/bin/test -f /usr/lib/libsandy.dylib";
-                        int checkResult = runCmdWithTimeout(checkCmd, 5);
-                        filesExist = (checkResult == 0);
-                        writeLog(filesExist ? @"  ✅ libsandy.dylib 存在" : @"  ❌ libsandy.dylib 不存在");
-                    } else if ([packageName containsString:@"libundirect"]) {
-                        // 检查 libundirect 动态库
-                        NSString *checkCmd = @"/usr/bin/test -f /usr/lib/libundirect.dylib";
-                        int checkResult = runCmdWithTimeout(checkCmd, 5);
-                        filesExist = (checkResult == 0);
-                        writeLog(filesExist ? @"  ✅ libundirect.dylib 存在" : @"  ❌ libundirect.dylib 不存在");
-                    } else if ([packageName containsString:@"patchloader"]) {
-                        // 检查 patchloader
-                        NSString *checkCmd = @"/usr/bin/test -f /usr/lib/patchloader.dylib";
-                        int checkResult = runCmdWithTimeout(checkCmd, 5);
-                        filesExist = (checkResult == 0);
-                        writeLog(filesExist ? @"  ✅ patchloader.dylib 存在" : @"  ❌ patchloader.dylib 不存在");
-                    } else if ([packageName containsString:@"preferenceloader"]) {
-                        // 检查 preferenceloader
-                        NSString *checkCmd = @"/usr/bin/test -f /usr/lib/preferenceloader.dylib";
-                        int checkResult = runCmdWithTimeout(checkCmd, 5);
-                        filesExist = (checkResult == 0);
-                        writeLog(filesExist ? @"  ✅ preferenceloader.dylib 存在" : @"  ❌ preferenceloader.dylib 不存在");
-                    } else if ([packageName containsString:@"rootless-compat"]) {
-                        // 检查 rootless-compat 文件
-                        NSString *checkCmd = @"/usr/bin/test -d /usr/lib/rootless";
-                        int checkResult = runCmdWithTimeout(checkCmd, 5);
-                        filesExist = (checkResult == 0);
-                        writeLog(filesExist ? @"  ✅ rootless-compat 目录存在" : @"  ❌ rootless-compat 目录不存在");
-                    } else if ([packageName containsString:@"altlist"]) {
-                        // 检查 altlist
-                        NSString *checkCmd = @"/usr/bin/test -f /usr/lib/libaltlist.dylib";
-                        int checkResult = runCmdWithTimeout(checkCmd, 5);
-                        filesExist = (checkResult == 0);
-                        writeLog(filesExist ? @"  ✅ libaltlist.dylib 存在" : @"  ❌ libaltlist.dylib 不存在");
-                    }
-                    
-                    if (filesExist) {
-                        writeLog([NSString stringWithFormat:@"  [VERIFIED] %@ 直接解压验证成功", packageName]);
-                        successCount++;
-                    } else {
-                        writeLog([NSString stringWithFormat:@"  [VERIFY_FAIL] %@ 直接解压验证失败 - 停止后续安装", packageName]);
-                        failCount++;
-                        break;
-                    }
-                } else {
-                    // dpkg 安装的文件验证方式
-                    writeLog(@"  等待dpkg数据库更新...");
-                    usleep(500000); // 等待0.5秒
-                    
-                    NSString *packageName = [[debName componentsSeparatedByString:@"_"] firstObject];
-                    writeLog([NSString stringWithFormat:@"  验证软件包: %@", packageName]);
-                    
-                    NSString *verifyCmd = [NSString stringWithFormat:@"%s -s '%@' >> '%@' 2>&1", dpkgPathCStr, packageName, persistentLogPath];
-                    int verifyResult = runCmdWithTimeout(verifyCmd, 30);
-                    
-                    // 如果第一次验证失败，重试一次
-                    if (verifyResult != 0) {
-                        writeLog(@"  第一次验证失败，等待1秒后重试...");
-                        usleep(1000000); // 等待1秒
-                        verifyResult = runCmdWithTimeout(verifyCmd, 30);
-                    }
-                    
-                    if (verifyResult == 0) {
-                        writeLog([NSString stringWithFormat:@"  [VERIFIED] %@ 已正确安装", packageName]);
-                        successCount++;
-                    } else {
-                        writeLog([NSString stringWithFormat:@"  [VERIFY_FAIL] %@ 安装验证失败 - 停止后续安装", packageName]);
-                        failCount++;
-                        break;
-                    }
-                }
-            }
-        }
-
-        writeLog([NSString stringWithFormat:@"安装完成: %d 成功, %d 失败", successCount, failCount]);
-        
-        // 检查是否有安装失败的情况
-        if (failCount > 0) {
-            writeLog([NSString stringWithFormat:@"⚠️ 警告: 有 %d 个插件安装失败，可能影响系统功能", failCount]);
-            
-            // 检查是否所有依赖都安装成功（除了可能的crane）
-            BOOL dependenciesOK = YES;
-            for (NSString *debName in installOrder) {
-                if (![debName containsString:@"crane_"]) {
-                    NSString *packageName = [[debName componentsSeparatedByString:@"_"] firstObject];
-                    NSString *checkCmd = [NSString stringWithFormat:@"%s -s '%@' >/dev/null 2>&1", dpkgPathCStr, packageName];
-                    int checkResult = runCmdWithTimeout(checkCmd, 5);
-                    if (checkResult != 0) {
-                        dependenciesOK = NO;
-                        writeLog([NSString stringWithFormat:@"❌ 关键依赖缺失: %@", packageName]);
-                    }
-                }
-            }
-            
-            if (!dependenciesOK) {
-                writeLog(@"❌ 关键依赖安装失败，系统可能无法正常工作");
-            } else {
-                writeLog(@"✅ 关键依赖已正确安装");
-            }
-        } else {
-            writeLog(@"✅ 所有插件安装成功");
-        }
-
-        // 确保配置所有包完成
-        writeLog(@"Running dpkg --configure -a to complete installation...");
-        int configResult = runCmdWithTimeout([NSString stringWithFormat:@"%s --configure -a >> '%@' 2>&1", dpkgPathCStr, persistentLogPath], 300);
-        writeLog([NSString stringWithFormat:@"dpkg --configure -a exit code: %d", configResult]);
-        
-        // Fix any broken dependencies and ensure all packages are properly configured
-        if (configResult != 0) {
-            writeLog(@"Configuration issues detected, attempting to fix dependencies...");
-            int fixResult = runCmdWithTimeout([NSString stringWithFormat:@"%s -f --install --force-reinstall --yes >> '%@' 2>&1", dpkgPathCStr, persistentLogPath], 300);
-            writeLog([NSString stringWithFormat:@"dpkg dependency fix exit code: %d", fixResult]);
-            
-            // Try to fix broken packages
-            writeLog(@"Attempting to fix any broken packages...");
-            int fixBrokenResult = runCmdWithTimeout([NSString stringWithFormat:@"%s --fix-broken --yes >> '%@' 2>&1", dpkgPathCStr, persistentLogPath], 300);
-            writeLog([NSString stringWithFormat:@"dpkg fix-broken exit code: %d", fixBrokenResult]);
-            
-            // Final configuration attempt
-            writeLog(@"Running final configuration...");
-            int finalConfigResult = runCmdWithTimeout([NSString stringWithFormat:@"%s --configure -a >> '%@' 2>&1", dpkgPathCStr, persistentLogPath], 300);
-            writeLog([NSString stringWithFormat:@"Final dpkg --configure -a exit code: %d", finalConfigResult]);
-        }
-
-        // 刷新图标缓存并重启 iconservicesagent / SpringBoard 来确保图标显示
-        writeLog(@"正在刷新图标缓存...");
-        int uicacheResult = runCmdWithTimeout([NSString stringWithFormat:@"%s -a >> '%@' 2>&1", ucachePathCStr, persistentLogPath], 60);
-        writeLog([NSString stringWithFormat:@"uicache 退出代码: %d", uicacheResult]);
-
-        // 只有在所有插件都安装成功后才重启桌面进程
-        if (failCount == 0) {
-            writeLog(@"所有插件安装成功，正在重启桌面进程以刷新图标...");
-            writeLog(@"重启 iconservicesagent...");
-            runCmdWithTimeout(@"/bin/killall -9 iconservicesagent || true", 5);
-            
-            // 小心：重启 SpringBoard 会导致前端退出，但这是刷新图标最快的方式
-            writeLog(@"重启 SpringBoard...");
-            runCmdWithTimeout(@"/bin/killall -9 SpringBoard || true", 5);
-        } else {
-            writeLog(@"⚠️ 由于有插件安装失败，跳过桌面进程重启以避免潜在问题");
-        }
-
-        writeLog(@"Syncing disk...");
-        sync();
-
-        // 写入标记文件，表示插件已安装（随后将 userspace reboot）
-        [@"done" writeToFile:flagPath atomically:YES
-                    encoding:NSUTF8StringEncoding error:nil];
-        writeLog(@"Flag written. Installation phase complete.");
-
-        free((void *)pathEnvCStr);
-        free((void *)shPathCStr);
-        free((void *)dpkgPathCStr);
-        free((void *)ucachePathCStr);
-
-        // Re-enable idle timer after installation completes
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [[UIApplication sharedApplication] setIdleTimerDisabled:NO];
-        });
-
-        // Final verification of installed packages
-        writeLog(@"Performing final verification of installed packages...");
-        int finalVerifyResult = runCmdWithTimeout([NSString stringWithFormat:@"%s -l >> '%@' 2>&1", dpkgPathCStr, persistentLogPath], 60);
-        writeLog([NSString stringWithFormat:@"Final package list verification exit code: %d", finalVerifyResult]);
-
-        // 延迟短暂时间，然后重启 userspace（在主线程执行 UI 日志）
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            [[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Rebooting Userspace") debug:NO];
-            [[DOEnvironmentManager sharedManager] rebootUserspace];
         });
     });
 }
